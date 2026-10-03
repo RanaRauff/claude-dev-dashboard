@@ -5,23 +5,21 @@ Mark an item done by changing `[ ]` to `[x]` in the PR that finishes it.
 
 ## Now
 
-### Keyboard-first navigation (Claude)
-Goal: every part of the pane reachable and usable from the keyboard, with the keys always visible on screen.
+### Keyboard-first navigation (Claude): built, waiting for a live check
+Goal: every part of the pane reachable from the keyboard with the keys people already know. No letter hotkeys.
 
-- [ ] Open `/dash` with the keyboard already on the pane (no ctrl+x tab needed).
-- [ ] A selection cursor: `j` / `k` move down and up through items, `g` jumps to the top.
-- [ ] Row actions on the selected item: `c` copy (session id, PR link or branch), `s` snooze 15 minutes, `x` dismiss.
-- [ ] Snooze and dismiss respect the band above the prompt and the toasts too, not just the pane.
-- [ ] `h` opens a full key reference inside the pane; `q` closes the pane.
-- [ ] The key legend in the footer always matches the real keys (one keymap table drives both).
-- [ ] Sections added by others (Plan, Sources, Files) can register their rows into the cursor list.
-- [ ] Tests for the cursor, snooze, dismiss and the keymap; README gets a Keyboard section.
-
-Why Buttons and not a custom key listener: a pane that has the keyboard presses any Button whose hotkey is one digit or one lowercase letter, and arrows already scroll. That covers everything above with no new module. Arrow-key selection would need a separate `Client` module and is not planned.
+- [x] `/dash` opens with the keyboard on the pane (no ctrl+x tab needed).
+- [x] ↑ ↓ and Tab move a highlight over the rows and buttons; Enter presses; Esc returns to the prompt; ctrl+x tab comes back.
+- [x] Every row has a `›` marker. Enter opens its actions: copy (resume command, PR link or summary), snooze 15m, dismiss.
+- [x] Snooze and dismiss reach the pane, the band above the prompt and the toasts alike; "bring back" undoes them.
+- [x] Footer buttons: refresh, alerts, help, close. Help lists the keys.
+- [x] Tests for the actions, snooze/dismiss and the whole flow through the engine's press path; README Keyboard section.
+- [ ] **Check it in a live pane** (Rahul): `/dash`, then ↑ ↓ / Tab / Enter / Esc. Not yet seen on a real terminal.
+- [ ] Sections added by others (Plan, Sources, Files) get a `›` marker too. (Claude; the row list is `itemsOf` in `hooks/attention.ts`, the marker is `Row` in `hooks/render.tsx`)
 
 ### In review
-- [ ] **PR #6** (Connor): Plan, Sources and Files sections. Changes requested: strip URL query strings before saving, and stop re-running git on idle sessions. Then re-run the checks and merge. (Connor, then Claude)
-- [ ] **PR #4** (Claude): opt-in one-line session summaries. Needs a live test with `/dash-summaries on`, then merge. (Rahul or Claude)
+- [ ] **PR #8** (Claude): keyboard navigation, above. Needs the live check, then merge. (Rahul)
+- [ ] **Handoff on /compact** (Connor, merged in #9): confirm a note appears after `/compact` in a throwaway session with the plugin loaded, and add a retention cap (keep the newest 30) and an off switch. (Connor)
 
 ## Next
 
@@ -63,5 +61,5 @@ Mocks: https://claude.ai/artifact/JYNHbTvB7nbN8Qx8TgTai3 (private link; the same
 ## Done
 - [x] Dashboard pane, agents, monitor, band above the prompt, alerts (PRs #1, #2, #3)
 - [x] Research on what people build with mods (PR #5)
-- [x] Connor invited as a collaborator; PR #6 opened
-- [x] **Test badge**: a pass/fail badge on each session row for the last test run it started (Connor, PR open)
+- [x] Connor invited as a collaborator; PRs #6 (Plan, Sources, Files), #9 and #10 (handoff on /compact, retention, off switch) and #11 (test badge) merged
+- [x] Opt-in one-line session summaries (#4)

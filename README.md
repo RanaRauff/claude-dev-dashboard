@@ -43,7 +43,26 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | **Sources** | 8 | URLs and searches sessions fetched (`WebFetch`, `WebSearch`), newest first, with the session that made them. Plugin sessions only. |
 | **Files** | 9 | Files each session edited this turn, with lines added and removed against `HEAD`. Plugin sessions only. |
 
-Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **r** refreshes, **h** hides the pane.
+## Keyboard
+
+The pane uses the same keys as the rest of Claude Code, with no letter shortcuts to learn.
+
+| Key | Does |
+| --- | --- |
+| **ctrl+x tab** | Take the keyboard from the prompt to the pane. `/dash` does the same and opens the pane if it is closed. |
+| **Esc** | Give the keyboard back to the prompt. |
+| **↑ ↓** or **Tab** | Move the highlight to the previous or next row or button. |
+| **Enter** | Press the highlighted button. On a row marker (`›`), it opens that row's actions. |
+| **1**–**9** | Fold or unfold a section. |
+
+Every row in Attention, Sessions, Agents and PRs starts with a small `›`. Move onto it and press **Enter** and the row's buttons appear under it:
+
+- **copy …**: puts `claude --resume <id>` on the clipboard for a session or agent, the link for a PR, or a one-line summary for the rest.
+- **snooze 15m** and **dismiss** (Attention rows only): hide the item in the pane, the band above the prompt and the toasts. Snooze lasts 15 minutes; dismiss lasts until the item changes (a session that waits again, or fails differently, comes back). **bring back** appears under Attention while anything is hidden.
+
+The buttons at the bottom (**refresh**, **alerts**, **help**, **close**) are reached the same way. **help** lists these keys inside the pane.
+
+Snoozes are forgotten when Claude Code restarts. Rows in the Plan, Sources and Files sections have no `›` yet.
 
 ## Alerts
 
@@ -68,8 +87,8 @@ The plugin is built on Claude Code's mods (function hooks) API, which is in **ea
 
 Then, in any session:
 
-- `/dash` opens the dashboard; it never opens by itself
-- `/dash-hide` closes it
+- `/dash` opens the dashboard with the keyboard on it (or brings the keyboard back to it); it never opens by itself
+- `/dash-hide` closes it (or press the **close** button)
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
 - `/dash-handoff on|off` writes (or stops writing) a handoff note each time a session compacts (on by default)
@@ -78,7 +97,7 @@ Then, in any session:
 - `/dash-watch issue <number or URL>` does the same for a GitHub issue (open or closed, how many comments, who it is assigned to; it fires on new comments, assignment and label changes, closing and reopening), and `/dash-watch run <run id or URL>` for a GitHub Actions run (queued, running, passed, failed, cancelled; it fires when it finishes). A GitHub URL is read as what it is, and a bare number is a pull request.
 - `/dash-watch list` shows what is watched, `/dash-watch clear <number|all>` removes them. A bare number means the repository of the session you typed it in
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
-- `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
+- `/dash-refresh` (or the **refresh** button) refreshes everything now, PRs included
 
 ### Requirements
 
@@ -101,6 +120,7 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 - `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, its one-line summary (only if summaries are on), cost, context use and its per-turn trend, cache hit rate, latest step, a stuck flag, a risky-command flag (the pattern name, not the command), and the files it edited in the last 30 minutes.
 - In that same file, for the Plan, Sources and Files sections: the text of the task in progress in its todo list, the URLs it fetched (scheme, host and path only; credentials, query strings and fragments are dropped before anything is stored) and the searches it ran (cut to 80 characters), and the paths of files it edited this turn with their added and removed line counts. For the test badge: the last test run it started, as a runner label such as `npm test` or `pytest`, whether it passed, and when. Never the command line, its arguments or its output.
 - `~/.claude/dev-dash/handoffs/<time>-<session>.md`, once each time this session's conversation compacts (`/compact` or automatic): a short note with the session's repo, branch and directory, a `claude --resume` line, how far its todo list got, its last step, the files it edited recently, and the summary text the compaction kept (cut to 2000 characters). These files stay on your machine. Only the newest 30 are kept: when a new note is written, dev-dash deletes older files in that folder, only files named like its own notes (a date and time, a short session id and `.md`), one bare file name at a time inside that folder, and nothing else. `/dash-handoff off` stops writing them. Compactions inside subagents are not written.
+- `~/.claude/dev-dash/last-error.txt`, only when a refresh fails: the time, where it failed, and the first 1500 characters of the error's stack trace (which can contain local file paths). Only the latest error is kept: the file is overwritten, never appended to.
 - Its own plugin store: the alerts, band, summaries and handoff on/off choices, the icon style, and the `/dash-watch` list (for each watch: its kind (pull request, issue or run), `owner/repo`, number, title, its last state in words such as `open · CI passing · approved`, `open · 2 comments · unassigned` or `running`, the small marks drawn from it (an icon and a word each, such as `✔ approved` or `👤 ana`, so an assignee's login can be among them), and times; at most 10, dropped 24 hours after they were added or last changed). `/dash-watch clear all` empties it.
 
 **Network:** the `gh` call to GitHub and, only if you turn summaries on, one small model call per finished turn through your own Claude Code session. Nothing else leaves your machine.

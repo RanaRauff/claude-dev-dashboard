@@ -50,6 +50,7 @@ import {
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { runExe as runExeWith } from './exe'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
+import { isMuted } from './keys'
 import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
@@ -81,6 +82,8 @@ const STALE_MS = 90_000
 const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
+const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
+const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
@@ -147,6 +150,7 @@ const ctx = {
   handoffDir: '',
   handoffOn: true,
   registryDir: '',
+  root: '',
   projectsDir: '',
   isOpen: false,
   ticks: 0,
@@ -680,14 +684,27 @@ async function summarize($: Engine, answer: string) {
   }
 }
 
-async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
+// A refresh that fails must never stop a command from answering or a hook from finishing. The error is
+// written to ~/.claude/dev-dash/last-error.txt (and only the latest), so a failure can be read afterwards.
+async function logError($: Engine, where: string, err: unknown) {
+  try {
+    if (!ctx.root) return
+    const detail = String((err as Error)?.stack ?? err).slice(0, 1500)
+    await $.fs.write(`${ctx.root}/last-error.txt`, `${new Date().toISOString()} ${where}\n${detail}\n`)
+  } catch {}
+}
+
+async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
   const sessions = await readSessions($)
   const agents = await readAgents($, sessions)
   if (sample) await update($, activity, h => pushActivity(h, sessions))
   const now = Date.now()
   const mine = ctx.prs && !ctx.prs.error ? ctx.prs.mine : null
+  const muting = { snoozed: (await read($, snoozed)) ?? {}, dismissed: (await read($, dismissed)) ?? [], now }
   for (const c of changesBetween(ctx.seen, sessions, agents, mine, ctx.selfId, now, ctx.isFirstLook)) {
-    note($, { at: c.at, tone: c.tone, text: c.text }, c.isAlert)
+    // A row you snoozed or dismissed in the pane stays in the feed but stops making noise.
+    const isMutedRow = c.itemId !== undefined && isMuted(muting, c.itemId)
+    note($, { at: c.at, tone: c.tone, text: c.text }, c.isAlert && !isMutedRow)
   }
   ctx.seen = remember(sessions, agents, mine)
   ctx.isFirstLook = false
@@ -711,6 +728,14 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
     }
     return next
   })
+}
+
+async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
+  try {
+    await publishNow($, gitInfo, sample)
+  } catch (err) {
+    await logError($, 'publish', err)
+  }
 }
 
 async function setState($: Engine, state: SessionState) {
@@ -814,6 +839,14 @@ async function pollWatches($: Engine, force: boolean) {
 }
 
 async function tick($: Engine, withPrs: boolean) {
+  try {
+    await tickNow($, withPrs)
+  } catch (err) {
+    await logError($, 'tick', err)
+  }
+}
+
+async function tickNow($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
   // Only while a turn runs: turn.complete already took the final numbers, and an idle session
@@ -827,12 +860,39 @@ async function tick($: Engine, withPrs: boolean) {
   await publish($, g, true)
 }
 
+// What `a`, `r` and `q` do. The typed commands and the footer keys run the same code. (A plugin cannot run its
+// own slash commands through $.command.run, which skips the calling plugin's hooks, so the keys call these.)
+async function setAlerts($: Engine, arg: string) {
+  const a = arg.trim().toLowerCase()
+  ctx.alertsOn = a === 'on' ? true : a === 'off' ? false : !ctx.alertsOn
+  await $.store.set('alertsOn', ctx.alertsOn).catch(() => undefined)
+  await publish($, undefined)
+
+  return `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.`
+}
+
+async function refreshNow($: Engine) {
+  titleCache.clear()
+  gitCache.clear()
+  await tick($, true)
+
+  return `Dashboard refreshed${ctx.prs?.error ? `; PRs: ${ctx.prs.error}` : ''}.`
+}
+
+async function closePane($: Engine) {
+  ctx.isOpen = false
+  await update($, paneOpen, () => false)
+  await $.ui.close({ id: PANE })
+  await publish($, undefined)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
     ctx.selfId = await $.session.id()
     const home = ((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '').replace(/\\/g, '/')
     const config = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
+    ctx.root = `${config}/dev-dash`
     ctx.dir = `${config}/dev-dash/sessions`
     ctx.handoffDir = `${config}/dev-dash/handoffs`
     ctx.registryDir = `${config}/sessions`
@@ -987,12 +1047,23 @@ export const register: Register = on => {
     }
   })
 
-  on('command.run', { command: 'dash-refresh' }, async $ => {
-    titleCache.clear()
-    gitCache.clear()
-    await tick($, true)
+  on('command.run', { command: 'dash-refresh' }, async $ => ({ text: await refreshNow($) }))
 
-    return { text: `Dashboard refreshed${ctx.prs?.error ? `; PRs: ${ctx.prs.error}` : ''}.` }
+  // The footer keys. The press is taken here, so the Button's own onPress (a no-op) never runs.
+  on('ui.press', { plugin: 'dev-dash', element: 'key-refresh' }, async ($, e) => {
+    await refreshNow($)
+
+    return { element: e.element }
+  })
+  on('ui.press', { plugin: 'dev-dash', element: 'key-alerts' }, async ($, e) => {
+    await setAlerts($, '')
+
+    return { element: e.element }
+  })
+  on('ui.press', { plugin: 'dev-dash', element: 'key-close' }, async ($, e) => {
+    await closePane($)
+
+    return { element: e.element }
   })
 
   // Closed some other way (the pane's own close, or Claude Code itself): stop polling GitHub.
@@ -1014,14 +1085,7 @@ export const register: Register = on => {
     return { text: `Dashboard line above the prompt ${ctx.bandOn ? 'on' : 'off'}.` }
   })
 
-  on('command.run', { command: 'dash-alerts' }, async ($, e) => {
-    const arg = (e.args ?? '').trim().toLowerCase()
-    ctx.alertsOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.alertsOn
-    await $.store.set('alertsOn', ctx.alertsOn)
-    await publish($, undefined)
-
-    return { text: `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.` }
-  })
+  on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
 
   on('command.run', { command: 'dash-watch' }, async ($, e) => {
     const cmd = parseWatchArgs(e.args ?? '')
@@ -1125,7 +1189,8 @@ export const register: Register = on => {
   on('command.run', { command: 'dash' }, async $ => {
     ctx.isOpen = true
     await update($, paneOpen, () => true)
-    await $.ui.open({ id: PANE, title: 'Dev dashboard' })
+    // focus: the keys work as soon as the pane is up, with no ctrl+x tab first.
+    await $.ui.open({ id: PANE, title: 'Dev dashboard', focus: true })
     if (ctx.disks.length === 0) void readDisks($)
     void tick($, true)
 
@@ -1133,10 +1198,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-hide' }, async $ => {
-    ctx.isOpen = false
-    await update($, paneOpen, () => false)
-    await $.ui.close({ id: PANE })
-    await publish($, undefined)
+    await closePane($)
 
     return { text: 'Dashboard hidden.' }
   })
