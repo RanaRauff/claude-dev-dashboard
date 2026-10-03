@@ -240,7 +240,7 @@ def cells_from_ansi(text):
 
 def draw_frame(chafa, png, cols, rows):
     out = subprocess.run(
-        [chafa, '--format=symbols', '--colors=full', '--animate=off', '--polite=on', f'--size={cols}x{rows}', png],
+        [chafa, '--format=symbols', '--colors=full', '--animate=off', '--polite=on', '--symbols=block', '--work=9', f'--size={cols}x{rows}', png],
         capture_output=True,
         check=True,
     ).stdout.decode('utf-8', 'replace')
