@@ -320,7 +320,32 @@ export function parseWatchArgs(args: string): WatchCommand {
   const run = /\/actions\/runs\//i.test(first) ? parseRunRef(first) : null
   if (run) return { cmd: 'add', spec: { kind: 'run', ...run } }
 
-  return { cmd: 'help', reason: 'I can watch a GitHub pull request, issue or Actions run.' }
+  return { cmd: 'help', reason: unsupportedReason(args) }
+}
+
+// Other services people may try. Not built: what is said is what would be needed to read each one, so it is clear
+// this is a gap and not a typo. No service here is read or contacted; this only recognises a name or a host.
+const OTHER_SOURCES: ReadonlyArray<{ name: string; match: RegExp; needs: string }> = [
+  { name: 'GitLab', match: /gitlab/i, needs: "GitLab's `glab` command-line tool, logged in" },
+  { name: 'Bitbucket', match: /bitbucket/i, needs: 'a Bitbucket MCP server connected to Claude Code' },
+  { name: 'Jira', match: /\bjira\b|atlassian\.net/i, needs: 'an Atlassian MCP server connected to Claude Code' },
+  { name: 'Linear', match: /linear\.app|\blinear\b/i, needs: 'a Linear MCP server connected to Claude Code' },
+  { name: 'Asana', match: /asana/i, needs: 'an Asana MCP server connected to Claude Code' },
+  { name: 'Notion', match: /notion\.(so|site)|\bnotion\b/i, needs: 'a Notion MCP server connected to Claude Code' },
+  { name: 'Slack', match: /slack\.com|\bslack\b/i, needs: 'a Slack MCP server connected to Claude Code' },
+  { name: 'PagerDuty', match: /pagerduty/i, needs: 'a PagerDuty MCP server connected to Claude Code' },
+  { name: 'Datadog', match: /datadog|datadoghq/i, needs: 'a Datadog MCP server connected to Claude Code' },
+  { name: 'Jenkins', match: /jenkins/i, needs: "a command that reads Jenkins' status, which dev-dash cannot run yet" },
+]
+
+/** Why an input that is not a GitHub item was not accepted: names the service if it is one people ask for. */
+export function unsupportedReason(input: string): string {
+  const mine = 'dev-dash can follow a GitHub pull request, issue or Actions run (through `gh`)'
+  const hit = OTHER_SOURCES.find(s => s.match.test(input))
+  if (hit) return `${mine}, not ${hit.name} yet. Reading ${hit.name} would need ${hit.needs}, and that is not built.`
+  if (/^\s*\S*:\/\//.test(input)) return `${mine}. That link is not one of those.`
+
+  return `${mine}.`
 }
 
 export const WATCH_HELP = 'Usage: /dash-watch pr|issue|run <number or URL> · /dash-watch list · /dash-watch clear <number|all>'
