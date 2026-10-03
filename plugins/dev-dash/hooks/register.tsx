@@ -48,7 +48,29 @@ import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
-import { addWatch, clearWatches, isExpired, parseWatchArgs, pollable, PR_FIELDS, readPr, stepWatch, WATCH_EVERY_MS, WATCH_HELP } from './watch'
+import type { Reading } from './watch'
+import {
+  addWatch,
+  clearWatches,
+  isExpired,
+  ISSUE_FIELDS,
+  MAIL_SERVERS,
+  MAIL_TOOL,
+  mailQueryOf,
+  parseWatchArgs,
+  pollable,
+  PR_FIELDS,
+  problemFor,
+  readIssue,
+  readMail,
+  readPr,
+  readRun,
+  RUN_FIELDS,
+  stepWatch,
+  stuckWatch,
+  WATCH_EVERY_MS,
+  WATCH_HELP,
+} from './watch'
 
 const PANE = 'dev-dash'
 const TICK_MS = 5000
@@ -737,14 +759,51 @@ async function loadWatches($: Engine): Promise<WatchRow[]> {
   return Array.isArray(v) ? v.filter(isWatchRow) : []
 }
 
-async function readWatch($: Engine, w: WatchRow) {
+/** One look at a watch: what it found, or why it could not look. */
+type Look = { reading: Reading } | { problem: string }
+
+const GH_READ: Record<'pr' | 'issue' | 'run', { args: string[]; fields: string; read: (json: unknown) => Reading | null }> = {
+  pr: { args: ['pr', 'view'], fields: PR_FIELDS, read: readPr },
+  issue: { args: ['issue', 'view'], fields: ISSUE_FIELDS, read: readIssue },
+  run: { args: ['run', 'view'], fields: RUN_FIELDS, read: readRun },
+}
+
+// Mail goes through the Gmail connector the person already has, asking only for metadata (ids, senders, dates):
+// never a subject, a snippet or a body.
+async function lookAtMail($: Engine, w: WatchRow): Promise<Look> {
+  const args = { query: mailQueryOf(w.query ?? ''), pageSize: 5, view: 'THREAD_VIEW_METADATA_ONLY' }
+  let res: { content?: Array<{ type: string; text?: string }>; isError?: boolean } | null = null
+  for (const server of MAIL_SERVERS) {
+    try {
+      res = (await $.mcp.call(server, MAIL_TOOL, args)) as typeof res
+      break
+    } catch {}
+  }
+  if (!res) return { problem: problemFor('mail', 'tool') }
+  const text = (res.content ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
+  if (res.isError) return { problem: problemFor('mail', 'failed', cut(lines(text)[0] ?? '', 60)) }
+  const reading = readMail(text, w.query ?? '')
+
+  return reading ? { reading } : { problem: problemFor('mail', 'failed', 'empty answer') }
+}
+
+async function lookAt($: Engine, w: WatchRow): Promise<Look> {
+  if (w.kind === 'mail') return lookAtMail($, w)
+  const g = GH_READ[w.kind]
   try {
-    const r = await runGh($, ['pr', 'view', String(w.number), '--repo', w.repo, '--json', PR_FIELDS], 20_000)
-    return r.exitCode === 0 ? readPr(JSON.parse(r.stdout)) : null
-  } catch {
-    return null
+    const r = await runGh($, [...g.args, String(w.number), '--repo', w.repo, '--json', g.fields], 20_000)
+    if (r.exitCode !== 0) return { problem: problemFor(w.kind, 'failed', cut(lines(r.stderr)[0] ?? '', 60)) }
+    const reading = g.read(JSON.parse(r.stdout))
+
+    return reading ? { reading } : { problem: problemFor(w.kind, 'failed', 'unexpected answer') }
+  } catch (err) {
+    const msg = String((err as Error)?.message ?? err)
+
+    return { problem: /ENOENT|not found|cannot start|not recognized/i.test(msg) ? problemFor(w.kind, 'tool') : problemFor(w.kind, 'failed', cut(msg, 60)) }
   }
 }
+
+const watchLabel = (w: WatchRow) => (w.kind === 'mail' ? `mail "${cut(w.query ?? '', 30)}"` : `${w.kind} #${w.number} ${w.repo}`)
 
 // One look at every live watch: no faster than WATCH_EVERY_MS unless forced (adding a watch takes its baseline).
 // A change after the baseline fires the watch: a line in the event feed and a mark in the section. Never a toast.
@@ -754,11 +813,11 @@ async function pollWatches($: Engine, force: boolean) {
   ctx.watchPolledAt = now
   let list = (await loadWatches($)).filter(w => !isExpired(w, now))
   for (const w of pollable(list, now)) {
-    const r = await readWatch($, w)
-    if (!r) continue
-    const next = stepWatch(w, r, now)
+    const look = await lookAt($, w)
+    const next = 'reading' in look ? stepWatch(w, look.reading, now) : stuckWatch(w, look.problem, now)
     if (next.firedAt > w.firedAt) {
-      note($, { at: now, tone: /failing/.test(next.fired) ? 'bad' : next.fired === 'merged' ? 'ok' : 'info', text: `watch #${w.number} ${w.repo}: ${next.fired}` }, false)
+      const tone = /failing|failed|conflict|gone/.test(next.fired) ? 'bad' : /merged|passed|ready|found/.test(next.fired) ? 'ok' : 'info'
+      note($, { at: now, tone, text: `watch ${watchLabel(w)}: ${next.fired}` }, false)
     }
     list = list.map(x => (x.id === w.id ? next : x))
   }
@@ -971,8 +1030,10 @@ export const register: Register = on => {
     const now = Date.now()
     ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, now))
     if (cmd.cmd === 'help') return { text: `${cmd.reason} ${WATCH_HELP}` }
+    // Not something dev-dash can read yet: say what to connect first, rather than store a watch that can never look.
+    if (cmd.cmd === 'unsupported') return { text: cmd.advice }
     if (cmd.cmd === 'list') {
-      const rows = ctx.watches.map((w, i) => `${i + 1}. #${w.number} ${w.repo} · ${w.detail || 'waiting for the first look'}${w.firedAt ? ` · ${w.fired}` : ''}`)
+      const rows = ctx.watches.map((w, i) => `${i + 1}. ${watchLabel(w)} · ${w.problem ? `cannot read: ${w.problem}` : w.detail || 'waiting for the first look'}${w.firedAt ? ` · ${w.fired}` : ''}`)
 
       return { text: rows.length ? rows.join('\n') : `Nothing watched. ${WATCH_HELP}` }
     }
@@ -985,17 +1046,17 @@ export const register: Register = on => {
       return { text: r.removed ? `Cleared ${r.removed === 1 ? 'that watch' : `${r.removed} watches`}.` : 'No watch with that number. /dash-watch list shows them.' }
     }
     // Add. A bare number means this session's repository, as gh knows it.
-    let ref = cmd.ref
-    if (!ref.repo) {
+    let spec = cmd.spec
+    if (spec.kind !== 'mail' && !spec.repo) {
       let name = ''
       try {
         const r = await runGh($, ['repo', 'view', '--json', 'nameWithOwner'], 15_000)
         if (r.exitCode === 0) name = String((JSON.parse(r.stdout) as { nameWithOwner?: string }).nameWithOwner ?? '')
       } catch {}
-      if (!name) return { text: 'I could not tell which repository #' + ref.number + ' is in. Use owner/repo#' + ref.number + ' or the pull request URL.' }
-      ref = { ...ref, repo: name }
+      if (!name) return { text: `I could not tell which repository #${spec.number} is in. Use owner/repo#${spec.number} or the GitHub URL. ${problemFor(spec.kind, 'tool')}` }
+      spec = { ...spec, repo: name }
     }
-    const added = addWatch(ctx.watches, ref, now)
+    const added = addWatch(ctx.watches, spec, now)
     if (added.error || !added.added) return { text: added.error }
     ctx.watches = added.list
     await $.store.set('watches', added.list).catch(() => undefined)
@@ -1003,10 +1064,10 @@ export const register: Register = on => {
     await publish($, undefined)
     const w = ctx.watches.find(x => x.id === added.added?.id)
 
-    // No reading yet means gh could not answer: not on PATH for this process, not logged in, or no such PR.
-    const unread = w?.detail ? '' : ' I could not read it just now: check that `gh` is installed, on your PATH and logged in (`gh auth status`), and that the pull request exists. It will keep trying while the pane is open.'
+    // A problem means the first look failed: say what to connect or check, and that it keeps trying.
+    const unread = w?.problem ? ` I cannot read it yet. ${w.problem} It keeps trying while the pane is open.` : ''
 
-    return { text: `Watching ${ref.repo}#${ref.number}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
+    return { text: `Watching ${w ? watchLabel(w) : 'it'}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
   })
 
   on('command.run', { command: 'dash-handoff' }, async ($, e) => {

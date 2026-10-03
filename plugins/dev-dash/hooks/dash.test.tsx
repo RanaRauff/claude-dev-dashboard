@@ -385,3 +385,68 @@ test('summaries: off by default, on writes a one-line label after a finished tur
   await $.command.run({ command: 'dash-summaries', args: 'off' })
   expect(JSON.parse(files.get('/cfg/dev-dash/sessions/self.json') ?? '{}').summary).toBe('')
 })
+
+test('draws each watch as a box with its source icon and marks, and says what to connect for one it cannot watch', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const base = { addedAt: now - 60_000, expiresAt: now + 3_600_000, changedAt: now - 30_000, done: false, value: 'x', checkedAt: now - 20_000, firedAt: 0, fired: '', title: '', query: '' }
+  const watches = [
+    { ...base, id: 'pr:o/r#11', kind: 'pr', repo: 'o/r', number: 11, title: 'Test badge on each session row', detail: 'ready to merge · CI passing · approved', tone: 'ok', firedAt: now - 5_000, fired: 'ready to merge', chips: [{ icon: '✔', text: 'ready', tone: 'ok' }, { icon: '●', text: 'CI', tone: 'ok' }, { icon: '✔', text: 'approved', tone: 'ok' }] },
+    { ...base, id: 'issue:o/r#4', kind: 'issue', repo: 'o/r', number: 4, title: 'Crash on start', detail: 'open · 2 comments', tone: 'info', chips: [{ icon: '○', text: 'open', tone: 'ok' }, { icon: '💬', text: '2', tone: 'info' }] },
+    { ...base, id: 'run:o/r#99', kind: 'run', repo: 'o/r', number: 99, title: 'CI · main', detail: 'failed', tone: 'bad', chips: [{ icon: '✗', text: 'failed', tone: 'bad' }] },
+    { ...base, id: 'mail:invoice 1042', kind: 'mail', repo: '', number: 0, query: 'Invoice 1042', title: 'Invoice 1042', detail: '2 messages · last from Bob', tone: 'info', chips: [{ icon: '✉', text: '2', tone: 'info' }, { icon: '↩', text: 'Bob', tone: 'mute', at: now - 120_000 }] },
+    { ...base, id: 'mail:offer letter', kind: 'mail', repo: '', number: 0, query: 'Offer letter', title: '', detail: '', value: '', checkedAt: now - 10_000, tone: 'mute', chips: [], problem: 'Mail watches use your Gmail connector, and it is not connected.' },
+  ]
+  const store = new Map<string, unknown>([['watches', watches]])
+  const none = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now - 60_000, context: { window: 200_000, percent: 10 }, rateLimits: [], cost: { usd: 0.1 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('ui.close', async () => ({ value: undefined }))
+  on('store.get', async (_$, e) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('process.run', async () => none)
+  on('mcp.call', async () => {
+    throw new Error('not connected')
+  })
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.list', async () => ({ value: [] }))
+  on('fs.stat', async () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.read', async () => ({ value: '' }))
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'dash', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+
+  const ui = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  const has = async (re: RegExp) => {
+    if (!(await ui.find({ type: 'Text', text: re }))) throw new Error(`no text matching ${re}`)
+  }
+  await has(/Watching \(5 · 1 fired\)/)
+  await has(/PR #11/)
+  await has(/Issue #4/)
+  await has(/Run #99/)
+  await has(/Mail/)
+  await has(/Test badge on each session row/)
+  await has(/Invoice 1042/)
+  await has(/ready to merge/)
+  await has(/Gmail connector/)
+  await ui.unmount()
+
+  // Something dev-dash has no adapter for is told what to connect, and nothing is stored for it.
+  const before = JSON.stringify(store.get('watches'))
+  const answer = JSON.stringify(await $.command.run({ command: 'dash-watch', args: 'jenkins job nightly' }))
+  expect(answer).toContain('Jenkins')
+  expect(answer).toContain('CLI')
+  expect(answer).toContain('MCP')
+  expect(JSON.stringify(store.get('watches'))).toBe(before)
+})

@@ -114,14 +114,37 @@ export type PrRow = {
 export type PrInfo = { error: string | null; mine: PrRow[]; toReview: PrRow[]; fetchedAt: number }
 
 /** A pull request the person asked to keep an eye on with /dash-watch. */
+export type WatchKind = 'pr' | 'issue' | 'run' | 'mail'
+
+export type WatchTone = 'ok' | 'warn' | 'bad' | 'info' | 'mute'
+
+/** One small status mark in a watch's box: an icon, a word or two, and how it should be coloured. */
+export type WatchChip = {
+  icon: string
+  text: string
+  tone: WatchTone
+  /** A time shown as how long ago it was (the last mail, say) instead of, or after, the text. */
+  at?: number
+}
+
 export type WatchRow = {
-  /** `pr:<owner/repo>#<number>`, lower case. */
+  /** `pr:<owner/repo>#<number>`, `issue:…`, `run:…`, lower case; `mail:<subject>` for a mail thread. */
   id: string
-  kind: 'pr'
-  /** `owner/repo`. */
+  kind: WatchKind
+  /** `owner/repo` for the GitHub kinds, '' for mail. */
   repo: string
+  /** The pull request or issue number, or the Actions run id; 0 for mail. */
   number: number
+  /** Mail: the subject words being watched. */
+  query?: string
+  /** The title of the PR, issue or run, as last read. */
   title: string
+  /** The status marks as last read. */
+  chips?: WatchChip[]
+  /** The box's overall colour as last read. */
+  tone?: WatchTone
+  /** Why it cannot be read right now (no `gh`, mail connector not connected); cleared by the next good look. */
+  problem?: string
   addedAt: number
   /** When it stops being polled and drops off the list: 24 hours after it was added, or after it last fired. */
   expiresAt: number

@@ -51,7 +51,9 @@ Mocks: https://claude.ai/artifact/JYNHbTvB7nbN8Qx8TgTai3 (private link; the same
 ### Watch (Connor, from the ideas list)
 - [x] `/dash-watch pr <number or URL>`: a Watching section at the top of the pane; polls `gh pr view` about once a minute while the pane is open; fires on a change after the first look (event feed and a mark, no toast).
 - [ ] **Rahul to decide**: may explicit watches poll while the pane is closed? May non-GitHub sources (Jenkins, a status page, news) run through a command the person wrote, or an MCP server they already connected? Both need a change to CONTRIBUTING.md. Tweets/X are not reliably reachable and stay out.
-- [ ] Other `gh` watches: issue, release, Actions run, a branch moving (`git ls-remote`). (Connor, after the first slice merges)
+- [x] Watch kinds: GitHub issue and Actions run (`gh`), and a mail thread by subject through the Gmail connector; each watch is an outlined box with a source icon and small marks; anything else is told what to connect (a logged-in CLI or an MCP server). (Connor, PR open, stacked on the first slice)
+- [ ] **Rahul to decide**: a mail watch calls the user's own Gmail connector (metadata only) while the pane is open. CONTRIBUTING.md says "no network calls other than through tools the user already has configured (`git`, `gh`)"; I read a connector the user already connected, asked for by a command they typed, as within that, but it should be confirmed or the line reworded.
+- [ ] Other watches: release, a branch moving (`git ls-remote`), a local file or log, a process or port. Other mail providers, Jira, Linear, Slack, Jenkins need their own MCP server or CLI first. (Connor)
 
 ## Housekeeping
 - [ ] Type-check the plugin (`tsc` is not installed on the machines used so far). (anyone)
