@@ -863,17 +863,23 @@ async function tick($: Engine, withPrs: boolean) {
 }
 
 // What Spotify on this machine is playing, read with a local command. Only while the pane is open and the
-// Entertainment tab is the one showing, and no more often than every few seconds.
+// Entertainment tab is the one showing, and no more often than every NOW_PLAYING_EVERY_MS. On Windows each read starts
+// a PowerShell, so it is not made more often than a track name needs. Returns whether the reading changed.
+const NOW_PLAYING_EVERY_MS = 10_000
+
 async function readNowPlaying($: Engine) {
   const now = Date.now()
-  if (now - ctx.nowPlayingAt < 4000) return
+  if (now - ctx.nowPlayingAt < NOW_PLAYING_EVERY_MS) return false
   ctx.nowPlayingAt = now
+  const before = `|`
   try {
     const r = await $.process.run(nowPlayingCommand(ctx.platform), { timeoutMs: 8000 })
     ctx.nowPlaying = parseNowPlaying(ctx.platform, r.stdout, r.exitCode, now)
   } catch {
     ctx.nowPlaying = unavailable(now)
   }
+
+  return `|` !== before
 }
 
 async function tickNow($: Engine, withPrs: boolean) {
@@ -884,14 +890,18 @@ async function tickNow($: Engine, withPrs: boolean) {
   if (me.state === 'running' && ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
-  if (ctx.isOpen) {
-    const showing = await read($, tab)
-    if (ctx.spotifyOn && isTab(showing) && showing === 'entertainment') await readNowPlaying($)
-  }
+  const showing = ctx.isOpen ? await read($, tab) : null
   // The list is read from the store inside, so a watch another session added is picked up too.
   if (ctx.isOpen) await pollWatches($, false)
   if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
   await publish($, g, true)
+  // Spotify last, and not waited for: a slow read (up to its 8 s limit) must not hold up the PR and watch polling or this
+  // tick's publish. If the track changed, it is published once the read is back.
+  if (ctx.spotifyOn && isTab(showing) && showing === 'entertainment') {
+    void readNowPlaying($)
+      .then(changed => (changed ? publish($, g) : undefined))
+      .catch(() => undefined)
+  }
 }
 
 // What `a`, `r` and `q` do. The typed commands and the footer keys run the same code. (A plugin cannot run its
