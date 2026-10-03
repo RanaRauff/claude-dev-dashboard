@@ -1,11 +1,11 @@
-// dev-dash: /dash-watch. Keep an eye on one GitHub PR and say when it changes.
+// dev-dash: /dash-watch. Keep an eye on a GitHub pull request, issue or Actions run and say when it changes.
 // Pure functions only, so they test without a session; register.tsx polls `gh` and stores the list,
 // watch-view.tsx draws it.
 //
 // A watch is something the person typed. It is polled with `gh` only while the pane is open (and once when
 // it is added, to take a baseline), no faster than every 60 seconds, and never toasts.
 
-import type { CiState, WatchRow } from '../types'
+import type { CiState, WatchKind, WatchRow } from '../types'
 
 export const WATCHES_KEPT = 10
 export const WATCH_EXPIRY_MS = 24 * 3_600_000
@@ -16,10 +16,13 @@ export type PrRef = { repo: string; number: number }
 /** What one look at a PR found: a comparable `value`, words for the person, and whether it is over. */
 export type Reading = { value: string; detail: string; title: string; done: boolean }
 
-/** `42`, `#42`, `owner/repo#42` or a pull request URL. `repo` is '' for a bare number: the caller fills it in. */
-export function parsePrRef(input: string): PrRef | null {
+/** What is being watched: a pull request, an issue or an Actions run. `repo` is '' until the caller fills it in. */
+export type WatchSpec = { kind: WatchKind; repo: string; number: number }
+
+/** `42`, `#42`, `owner/repo#42` or a GitHub URL with `path` (`pull`, `issues`, `actions/runs`) in it. `repo` is '' for a bare number. */
+function parseRef(input: string, path: string): PrRef | null {
   const s = input.trim()
-  const url = /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/i.exec(s)
+  const url = new RegExp(`^https?:\\/\\/github\\.com\\/([^/\\s]+\\/[^/\\s]+)\\/${path}\\/(\\d+)`, 'i').exec(s)
   if (url) return { repo: url[1], number: Number(url[2]) }
   const short = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(s)
   if (short) return { repo: short[1], number: Number(short[2]) }
@@ -27,6 +30,10 @@ export function parsePrRef(input: string): PrRef | null {
 
   return bare ? { repo: '', number: Number(bare[1]) } : null
 }
+
+export const parsePrRef = (input: string) => parseRef(input, 'pull')
+export const parseIssueRef = (input: string) => parseRef(input, 'issues')
+export const parseRunRef = (input: string) => parseRef(input, 'actions\\/runs')
 
 const FAILED = ['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']
 
@@ -106,13 +113,98 @@ export function describeChange(prev: string, next: string): string {
   return parts.join(', ') || 'changed'
 }
 
-export const watchId = (ref: PrRef) => `pr:${ref.repo.toLowerCase()}#${ref.number}`
+// ---------------------------------------------------------------------------
+// GitHub issues
+// ---------------------------------------------------------------------------
+export const ISSUE_FIELDS = 'state,title,stateReason,comments,labels,assignees'
 
-export const newWatch = (ref: PrRef, now: number): WatchRow => ({
-  id: watchId(ref),
-  kind: 'pr',
-  repo: ref.repo,
-  number: ref.number,
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+const names = (v: unknown, key: string): string[] =>
+  Array.isArray(v) ? v.map(x => String((x && typeof x === 'object' ? (x as Record<string, unknown>)[key] : x) ?? '').trim()).filter(Boolean) : []
+
+/** One `gh issue view --json state,title,stateReason,comments,labels,assignees` answer, or null if it is not one. */
+export function readIssue(json: unknown): Reading | null {
+  if (!json || typeof json !== 'object') return null
+  const j = json as Record<string, unknown>
+  const state = String(j.state ?? '').toUpperCase()
+  if (state !== 'OPEN' && state !== 'CLOSED') return null
+  const comments = Array.isArray(j.comments) ? j.comments.length : 0
+  const labels = names(j.labels, 'name').sort()
+  const assignees = names(j.assignees, 'login')
+  const isOpen = state === 'OPEN'
+  const closedWord = String(j.stateReason ?? '').toUpperCase() === 'NOT_PLANNED' ? 'not planned' : 'closed'
+  const detail = isOpen ? ['open', plural(comments, 'comment'), assignees.length ? `assigned to ${assignees.join(', ')}` : 'unassigned'].join(' · ') : closedWord
+
+  return { value: `${state}|${comments}|${labels.join(',')}|${assignees.join(',')}`, detail, title: String(j.title ?? '').trim(), done: !isOpen }
+}
+
+/** What changed between two issue values, in words: `2 new comments`, `assigned`, `closed`. */
+export function describeIssueChange(prev: string, next: string): string {
+  const [ps, pc, pl, pa] = prev.split('|')
+  const [ns, nc, nl, na] = next.split('|')
+  if (ns !== ps) return ns === 'CLOSED' ? 'closed' : 'reopened'
+  const parts: string[] = []
+  const added = Number(nc) - Number(pc)
+  if (added > 0) parts.push(added === 1 ? 'new comment' : `${added} new comments`)
+  if (na !== pa) parts.push(na ? 'assigned' : 'unassigned')
+  if (nl !== pl) parts.push('labels changed')
+
+  return parts.join(', ') || 'changed'
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Actions runs
+// ---------------------------------------------------------------------------
+export const RUN_FIELDS = 'status,conclusion,name,workflowName,displayTitle,headBranch'
+
+/** One `gh run view --json status,conclusion,...` answer, or null if it is not one. */
+export function readRun(json: unknown): Reading | null {
+  if (!json || typeof json !== 'object') return null
+  const j = json as Record<string, unknown>
+  const status = String(j.status ?? '').toLowerCase()
+  if (!status) return null
+  const conclusion = String(j.conclusion ?? '').toLowerCase()
+  const isDone = status === 'completed'
+  const title = [String(j.workflowName ?? j.name ?? '').trim(), String(j.headBranch ?? '').trim()].filter(Boolean).join(' · ') || String(j.displayTitle ?? '').trim()
+  const detail = !isDone
+    ? status === 'queued' || status === 'waiting' || status === 'pending'
+      ? 'queued'
+      : 'running'
+    : conclusion === 'success'
+      ? 'passed'
+      : conclusion === 'cancelled'
+        ? 'cancelled'
+        : conclusion === 'skipped'
+          ? 'skipped'
+          : 'failed'
+
+  return { value: `${status}|${conclusion}`, detail, title, done: isDone }
+}
+
+export function describeRunChange(_prev: string, next: string): string {
+  return readRun({ status: next.split('|')[0], conclusion: next.split('|')[1] })?.detail ?? 'changed'
+}
+
+/** What changed between two values of a watch of `kind`, in words. */
+export function describe(kind: WatchKind, prev: string, next: string): string {
+  return kind === 'pr' ? describeChange(prev, next) : kind === 'issue' ? describeIssueChange(prev, next) : describeRunChange(prev, next)
+}
+
+/** What a watch is called on screen: `PR #11`, `Issue #4`, `Run #123456`. */
+export const KIND_LABEL: Record<WatchKind, string> = { pr: 'PR', issue: 'Issue', run: 'Run' }
+export const watchName = (w: { kind: WatchKind; number: number }) => `${KIND_LABEL[w.kind]} #${w.number}`
+
+// ---------------------------------------------------------------------------
+// A watch over time
+// ---------------------------------------------------------------------------
+export const watchId = (spec: WatchSpec) => `${spec.kind}:${spec.repo.toLowerCase()}#${spec.number}`
+
+export const newWatch = (spec: WatchSpec, now: number): WatchRow => ({
+  id: watchId(spec),
+  kind: spec.kind,
+  repo: spec.repo,
+  number: spec.number,
   title: '',
   addedAt: now,
   expiresAt: now + WATCH_EXPIRY_MS,
@@ -131,7 +223,7 @@ export function stepWatch(w: WatchRow, r: Reading, now: number): WatchRow {
   if (w.value === '') return { ...base, value: r.value, changedAt: now }
   if (r.value === w.value) return base
 
-  return { ...base, value: r.value, changedAt: now, firedAt: now, fired: describeChange(w.value, r.value), expiresAt: now + WATCH_EXPIRY_MS }
+  return { ...base, value: r.value, changedAt: now, firedAt: now, fired: describe(w.kind, w.value, r.value), expiresAt: now + WATCH_EXPIRY_MS }
 }
 
 export const isExpired = (w: WatchRow, now: number) => now >= w.expiresAt
@@ -142,13 +234,13 @@ export const pollable = (list: readonly WatchRow[], now: number) => list.filter(
 export type AddResult = { list: WatchRow[]; added: WatchRow | null; error: string }
 
 /** The list with a watch added: a repeat is kept as it was, and a full list refuses rather than dropping one. */
-export function addWatch(list: readonly WatchRow[], ref: PrRef, now: number): AddResult {
+export function addWatch(list: readonly WatchRow[], spec: WatchSpec, now: number): AddResult {
   const live = list.filter(w => !isExpired(w, now))
-  const id = watchId(ref)
+  const id = watchId(spec)
   const existing = live.find(w => w.id === id)
   if (existing) return { list: live, added: existing, error: '' }
   if (live.length >= WATCHES_KEPT) return { list: live, added: null, error: `That is ${WATCHES_KEPT} watches already. Clear one with /dash-watch clear <number>.` }
-  const w = newWatch(ref, now)
+  const w = newWatch(spec, now)
 
   return { list: [...live, w], added: w, error: '' }
 }
@@ -164,12 +256,14 @@ export function clearWatches(list: readonly WatchRow[], which: string): { list: 
 }
 
 export type WatchCommand =
-  | { cmd: 'add'; ref: PrRef }
+  | { cmd: 'add'; spec: WatchSpec }
   | { cmd: 'clear'; which: string }
   | { cmd: 'list' }
   | { cmd: 'help'; reason: string }
 
-/** `pr 42`, `42`, a URL, `clear 2`, `clear all`, `list`, or nothing. */
+const REF_PARSERS: Record<WatchKind, (input: string) => PrRef | null> = { pr: parsePrRef, issue: parseIssueRef, run: parseRunRef }
+
+/** `pr 42`, `issue o/r#3`, `run <url>`, a GitHub URL, a bare number (a pull request), `clear 2`, `clear all`, `list`, or nothing. */
 export function parseWatchArgs(args: string): WatchCommand {
   const words = args.trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return { cmd: 'list' }
@@ -177,10 +271,20 @@ export function parseWatchArgs(args: string): WatchCommand {
   const verb = first.toLowerCase()
   if (verb === 'list') return { cmd: 'list' }
   if (verb === 'clear' || verb === 'rm' || verb === 'remove') return rest[0] ? { cmd: 'clear', which: rest[0] } : { cmd: 'help', reason: 'Clear which one? /dash-watch clear <number> or /dash-watch clear all.' }
-  const target = verb === 'pr' ? rest[0] : first
-  const ref = target ? parsePrRef(target) : null
+  if (verb === 'pr' || verb === 'issue' || verb === 'run') {
+    const ref = rest[0] ? REF_PARSERS[verb](rest[0]) : null
 
-  return ref ? { cmd: 'add', ref } : { cmd: 'help', reason: 'I can watch a pull request: /dash-watch pr <number or URL>.' }
+    return ref ? { cmd: 'add', spec: { kind: verb, ...ref } } : { cmd: 'help', reason: `Which ${verb}? A number, owner/repo#number or a GitHub URL.` }
+  }
+  // No verb: a GitHub URL says what it is; a bare number or owner/repo#number is a pull request.
+  const pr = parsePrRef(first)
+  if (pr) return { cmd: 'add', spec: { kind: 'pr', ...pr } }
+  const issue = /\/issues\//i.test(first) ? parseIssueRef(first) : null
+  if (issue) return { cmd: 'add', spec: { kind: 'issue', ...issue } }
+  const run = /\/actions\/runs\//i.test(first) ? parseRunRef(first) : null
+  if (run) return { cmd: 'add', spec: { kind: 'run', ...run } }
+
+  return { cmd: 'help', reason: 'I can watch a GitHub pull request, issue or Actions run.' }
 }
 
-export const WATCH_HELP = 'Usage: /dash-watch pr <number or URL> · /dash-watch list · /dash-watch clear <number|all>'
+export const WATCH_HELP = 'Usage: /dash-watch pr|issue|run <number or URL> · /dash-watch list · /dash-watch clear <number|all>'

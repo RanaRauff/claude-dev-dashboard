@@ -18,6 +18,7 @@ import type {
   Snapshot,
   SourceRow,
   TestRun,
+  WatchKind,
   WatchRow,
   WorktreeRow,
 } from '../types'
@@ -50,7 +51,24 @@ import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
 import { pushActivity, registerDashPane } from './render'
-import { addWatch, clearWatches, isExpired, parseWatchArgs, pollable, PR_FIELDS, readPr, stepWatch, WATCH_EVERY_MS, WATCH_HELP } from './watch'
+import type { Reading } from './watch'
+import {
+  addWatch,
+  clearWatches,
+  isExpired,
+  ISSUE_FIELDS,
+  parseWatchArgs,
+  pollable,
+  PR_FIELDS,
+  readIssue,
+  readPr,
+  readRun,
+  RUN_FIELDS,
+  stepWatch,
+  WATCH_EVERY_MS,
+  WATCH_HELP,
+  watchName,
+} from './watch'
 
 const PANE = 'dev-dash'
 const TICK_MS = 5000
@@ -765,10 +783,18 @@ async function loadWatches($: Engine): Promise<WatchRow[]> {
   return Array.isArray(v) ? v.filter(isWatchRow) : []
 }
 
+// How each kind is read: the gh subcommand, the fields asked for, and the function that turns the answer into a reading.
+const GH_READ: Record<WatchKind, { args: string[]; fields: string; read: (json: unknown) => Reading | null }> = {
+  pr: { args: ['pr', 'view'], fields: PR_FIELDS, read: readPr },
+  issue: { args: ['issue', 'view'], fields: ISSUE_FIELDS, read: readIssue },
+  run: { args: ['run', 'view'], fields: RUN_FIELDS, read: readRun },
+}
+
 async function readWatch($: Engine, w: WatchRow) {
+  const g = GH_READ[w.kind] ?? GH_READ.pr
   try {
-    const r = await runGh($, ['pr', 'view', String(w.number), '--repo', w.repo, '--json', PR_FIELDS], 20_000)
-    return r.exitCode === 0 ? readPr(JSON.parse(r.stdout)) : null
+    const r = await runGh($, [...g.args, String(w.number), '--repo', w.repo, '--json', g.fields], 20_000)
+    return r.exitCode === 0 ? g.read(JSON.parse(r.stdout)) : null
   } catch {
     return null
   }
@@ -786,7 +812,8 @@ async function pollWatches($: Engine, force: boolean) {
     if (!r) continue
     const next = stepWatch(w, r, now)
     if (next.firedAt > w.firedAt) {
-      note($, { at: now, tone: /failing/.test(next.fired) ? 'bad' : next.fired === 'merged' ? 'ok' : 'info', text: `watch #${w.number} ${w.repo}: ${next.fired}` }, false)
+      const tone = /failing|failed|conflict/.test(next.fired) ? 'bad' : /merged|passed|ready/.test(next.fired) ? 'ok' : 'info'
+      note($, { at: now, tone, text: `watch ${watchName(w)} ${w.repo}: ${next.fired}` }, false)
     }
     list = list.map(x => (x.id === w.id ? next : x))
   }
@@ -1007,7 +1034,7 @@ export const register: Register = on => {
     ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, now))
     if (cmd.cmd === 'help') return { text: `${cmd.reason} ${WATCH_HELP}` }
     if (cmd.cmd === 'list') {
-      const rows = ctx.watches.map((w, i) => `${i + 1}. #${w.number} ${w.repo} · ${w.detail || 'waiting for the first look'}${w.firedAt ? ` · ${w.fired}` : ''}`)
+      const rows = ctx.watches.map((w, i) => `${i + 1}. ${watchName(w)} ${w.repo} · ${w.detail || 'waiting for the first look'}${w.firedAt ? ` · ${w.fired}` : ''}`)
 
       return { text: rows.length ? rows.join('\n') : `Nothing watched. ${WATCH_HELP}` }
     }
@@ -1020,17 +1047,17 @@ export const register: Register = on => {
       return { text: r.removed ? `Cleared ${r.removed === 1 ? 'that watch' : `${r.removed} watches`}.` : 'No watch with that number. /dash-watch list shows them.' }
     }
     // Add. A bare number means this session's repository, as gh knows it.
-    let ref = cmd.ref
-    if (!ref.repo) {
+    let spec = cmd.spec
+    if (!spec.repo) {
       let name = ''
       try {
         const r = await runGh($, ['repo', 'view', '--json', 'nameWithOwner'], 15_000)
         if (r.exitCode === 0) name = String((JSON.parse(r.stdout) as { nameWithOwner?: string }).nameWithOwner ?? '')
       } catch {}
-      if (!name) return { text: 'I could not tell which repository #' + ref.number + ' is in. Use owner/repo#' + ref.number + ' or the pull request URL.' }
-      ref = { ...ref, repo: name }
+      if (!name) return { text: `I could not tell which repository #${spec.number} is in. Use owner/repo#${spec.number} or the GitHub URL.` }
+      spec = { ...spec, repo: name }
     }
-    const added = addWatch(ctx.watches, ref, now)
+    const added = addWatch(ctx.watches, spec, now)
     if (added.error || !added.added) return { text: added.error }
     ctx.watches = added.list
     await $.store.set('watches', added.list).catch(() => undefined)
@@ -1038,10 +1065,10 @@ export const register: Register = on => {
     await publish($, undefined)
     const w = ctx.watches.find(x => x.id === added.added?.id)
 
-    // No reading yet means gh could not answer: not on PATH for this process, not logged in, or no such PR.
-    const unread = w?.detail ? '' : ' I could not read it just now: check that `gh` is installed, on your PATH and logged in (`gh auth status`), and that the pull request exists. It will keep trying while the pane is open.'
+    // No reading yet means gh could not answer: not on PATH for this process, not logged in, or no such item.
+    const unread = w?.detail ? '' : ` I could not read it just now: check that \`gh\` is installed, on your PATH and logged in (\`gh auth status\`), and that the ${spec.kind === 'pr' ? 'pull request' : spec.kind === 'issue' ? 'issue' : 'run'} exists. It will keep trying while the pane is open.`
 
-    return { text: `Watching ${ref.repo}#${ref.number}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
+    return { text: `Watching ${watchName(spec)} in ${spec.repo}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
   })
 
   on('command.run', { command: 'dash-handoff' }, async ($, e) => {
