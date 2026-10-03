@@ -10,6 +10,7 @@ type El = (props: any) => any
 export type TabView = {
   Box: El
   Text: El
+  Button: El
   W: number
   now: number
   tone: { ok: string; warn: string; bad: string; info: string; accent: string; mute: string }
@@ -28,25 +29,52 @@ function Card(v: TabView, p: { title: string; tone?: string; children?: unknown 
   )
 }
 
-function nowPlayingCard(v: TabView, np: NowPlaying | null) {
-  const { Box, Text, tone, fmt, W, now } = v
+function nowPlayingCard(v: TabView, np: NowPlaying | null, isOn: boolean) {
+  const { Box, Text, Button, tone, fmt, W, now } = v
+  // Off by default: nothing is read until the person turns it on, with this button or /dash-spotify on.
+  if (!isOn) {
+    return Card(v, {
+      title: '♪ Now playing · Spotify',
+      children: (
+        <Box flexDirection="column">
+          <Text dimColor wrap="wrap">Off. Nothing is read until you turn it on. When on, this shows the track the Spotify app on this machine is playing: no login, no network.</Text>
+          <Box flexDirection="row" marginTop={1}>
+            <Button key="spotify-toggle" variant="primary" label="turn on" onPress={() => undefined} />
+          </Box>
+        </Box>
+      ),
+    })
+  }
   const body =
     np === null ? (
       <Text dimColor>Looking for Spotify…</Text>
     ) : np.state === 'playing' ? (
-      <Box flexDirection="column">
-        <Text color={tone.ok} bold wrap="truncate-end">▶ {fmt.cut(np.track, W - 8)}</Text>
-        <Text dimColor>read {fmt.ago(now - np.at)} ago from the Spotify app on this machine</Text>
-      </Box>
+      <Text color={tone.ok} bold wrap="truncate-end">▶ {fmt.cut(np.track, W - 8)}</Text>
+    ) : np.state === 'paused' ? (
+      <Text wrap="truncate-end">⏸ {fmt.cut(np.track, W - 16)} <Text dimColor>(paused)</Text></Text>
     ) : np.state === 'idle' ? (
-      <Text dimColor>Spotify is open, nothing is playing.</Text>
+      <Text dimColor wrap="wrap">Spotify is open, but no song has been started. Play one and it appears here.</Text>
     ) : np.state === 'closed' ? (
       <Text dimColor>Spotify is not running.</Text>
     ) : (
       <Text color={tone.warn} wrap="wrap">Could not read Spotify here. On Linux this needs `playerctl`.</Text>
     )
 
-  return Card(v, { title: '♪ Now playing · Spotify', tone: np?.state === 'playing' ? tone.ok : undefined, children: body })
+  return Card(v, {
+    title: '♪ Now playing · Spotify',
+    tone: np?.state === 'playing' ? tone.ok : undefined,
+    children: (
+      <Box flexDirection="column">
+        {body}
+        {np && (np.state === 'playing' || np.state === 'paused') && (
+          <Text dimColor>read {fmt.ago(now - np.at)} ago from the Spotify app on this machine</Text>
+        )}
+        <Box flexDirection="row" marginTop={1}>
+          <Button key="spotify-toggle" label="turn off" dimColor onPress={() => undefined} />
+        </Box>
+      </Box>
+    ),
+  })
 }
 
 function stocksCard(v: TabView) {
@@ -64,14 +92,14 @@ function stocksCard(v: TabView) {
 }
 
 /** The Entertainment tab: a column of cards. */
-export function entertainmentView(v: TabView, np: NowPlaying | null) {
+export function entertainmentView(v: TabView, np: NowPlaying | null, isSpotifyOn: boolean) {
   const { Box, Text } = v
 
   return (
     <Box flexDirection="column" marginTop={1} rowGap={1}>
-      {nowPlayingCard(v, np)}
+      {nowPlayingCard(v, np, isSpotifyOn)}
       {stocksCard(v)}
-      <Text dimColor>More widgets will land here. Spotify is read only while this tab is showing.</Text>
+      <Text dimColor>More widgets will land here. Spotify, when on, is read only while this tab is showing.</Text>
     </Box>
   )
 }

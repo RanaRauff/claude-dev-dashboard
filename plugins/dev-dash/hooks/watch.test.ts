@@ -14,6 +14,7 @@ import {
   parsePrRef,
   parseRunRef,
   parseWatchArgs,
+  unsupportedReason,
   pollable,
   readIssue,
   readPr,
@@ -258,6 +259,27 @@ describe('the command', () => {
     expect(parseWatchArgs('issue abc').cmd).toBe('help')
     expect(parseWatchArgs('run').cmd).toBe('help')
     expect(parseWatchArgs('jenkins job x').cmd).toBe('help')
+  })
+
+  test('a service that is not GitHub is named, with what reading it would need; nothing else is promised', () => {
+    const reason = (s: string) => {
+      const c = parseWatchArgs(s)
+
+      return c.cmd === 'help' ? c.reason : ''
+    }
+    expect(reason('https://gitlab.com/g/p/-/merge_requests/4')).toContain('not GitLab yet')
+    expect(reason('https://gitlab.com/g/p/-/merge_requests/4')).toContain('`glab`')
+    expect(reason('jenkins job x')).toContain('Jenkins')
+    expect(reason('jira PROJ-12')).toContain('Atlassian MCP server')
+    expect(reason('https://acme.atlassian.net/browse/PROJ-12')).toContain('Jira')
+    expect(reason('https://linear.app/acme/issue/ENG-3')).toContain('Linear MCP server')
+    expect(reason('slack #deploys')).toContain('Slack')
+    expect(reason('https://example.com/status')).toContain('That link is not one of those')
+    expect(reason('banana')).toBe('dev-dash can follow a GitHub pull request, issue or Actions run (through `gh`).')
+    // Mail is held for a decision, so it is not named or offered here.
+    expect(reason('gmail thread')).not.toContain('MCP')
+    expect(reason('https://mail.google.com/mail/u/0/#inbox/abc')).not.toContain('Gmail')
+    expect(unsupportedReason('')).toContain('GitHub')
   })
 })
 

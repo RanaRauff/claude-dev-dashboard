@@ -52,7 +52,7 @@ export async function recapNow(d: RecapDeps): Promise<string> {
     // "Mine" is whatever this repository's own configured email says; with none set there is nothing to match.
     const email = (await d.git(['-C', top, 'config', 'user.email']))?.trim()
     if (!email) continue
-    const log = await d.git(['-C', top, 'log', `--since=${dayStamp(since)} 00:00`, `--author=${email}`, '--no-merges', '--pretty=format:%h%x09%s'])
+    const log = await d.git(['-C', top, 'log', '--all', `--since=${dayStamp(since)} 00:00`, `--author=${email}`, '--no-merges', '--pretty=format:%h%x09%s'])
     if (log) commits.push(...parseCommits(baseName(top), log))
   }
 

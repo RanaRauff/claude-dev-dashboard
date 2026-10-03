@@ -156,6 +156,8 @@ describe('/dash-recap end to end, with git and gh stubbed', () => {
     expect(log).toContain('--author=me@x.io')
     expect(log).toContain('--since=2026-10-03 00:00')
     expect(log).toContain('--no-merges')
+    // Every branch, so work on a branch other than the checked-out one counts.
+    expect(log).toContain(' --all ')
     expect(text).toContain('dash abc1234 Fix it')
     expect(text).toContain('o/dash#7 Merged one')
     expect(text).toContain('Sessions: 1, $1.50 in all')
