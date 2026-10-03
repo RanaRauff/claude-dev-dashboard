@@ -4,6 +4,9 @@ import type { Engine, Register } from 'claude-code'
 import type {
   AgentRow,
   BranchRow,
+  ChangedFile,
+  PlanProgress,
+  SourceRow,
   DiskRow,
   CiState,
   EventRow,
@@ -38,6 +41,7 @@ import {
   summarizeAgent,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
+import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
 
 const PANE = 'dev-dash'
@@ -132,6 +136,11 @@ const ctx = {
   disks: [] as DiskRow[],
   lowDisks: new Set<string>(),
   isWindows: false,
+  plan: null as PlanProgress | null,
+  planAt: 0,
+  sources: [] as SourceRow[],
+  turnEdits: new Map<string, string>(),
+  turnFiles: [] as ChangedFile[],
 }
 
 const RISKY_WINDOW_MS = 10 * 60_000
@@ -162,6 +171,10 @@ const me = {
   risky: '',
   ctxTrend: [] as number[],
   cacheHitPct: null as number | null,
+  plan: null as PlanProgress | null,
+  planAt: 0,
+  sources: [] as SourceRow[],
+  turnFiles: [] as ChangedFile[],
 }
 
 async function git($: Engine, args: string[]) {
@@ -193,6 +206,10 @@ async function heartbeat($: Engine) {
   me.risky = ctx.risky && now - ctx.risky.at < RISKY_WINDOW_MS ? ctx.risky.label : ''
   me.ctxTrend = ctx.ctxTrend
   me.cacheHitPct = ctx.cacheHit
+  me.plan = ctx.plan
+  me.planAt = ctx.planAt
+  me.sources = ctx.sources
+  me.turnFiles = ctx.turnFiles
   const row: SessionRow = { ...me, costUsd, contextPct, updatedAt: now }
   await $.fs.write(`${ctx.dir}/${ctx.selfId}.json`, JSON.stringify(row)).catch(() => undefined)
 }
@@ -367,6 +384,10 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
       risky: beat?.risky ?? '',
       ctxTrend: beat?.ctxTrend ?? [],
       cacheHitPct: beat?.cacheHitPct ?? null,
+      plan: beat?.plan ?? null,
+      planAt: beat?.planAt ?? 0,
+      sources: beat?.sources ?? [],
+      turnFiles: beat?.turnFiles ?? [],
     })
   }
   for (const beat of beats.values()) {
@@ -601,9 +622,30 @@ async function setState($: Engine, state: SessionState) {
   await publish($, undefined)
 }
 
+// Files this turn edited, with lines added/removed against HEAD. A file git has no diff for
+// but lists as untracked is new: all of its lines count as added.
+async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
+  const files: ChangedFile[] = []
+  for (const file of [...ctx.turnEdits.values()].slice(-TURN_FILES_KEPT)) {
+    const diff = parseNumstat((await git($, ['diff', '--numstat', 'HEAD', '--', file])) ?? '')[0]
+    if (diff) {
+      files.push({ path: file, added: diff.added, removed: diff.removed })
+      continue
+    }
+    const isNew = ((await git($, ['ls-files', '--others', '--exclude-standard', '--', file])) ?? '').trim() !== ''
+    if (!isNew) continue
+    try {
+      files.push({ path: file, added: countLines(await $.fs.read(file)), removed: 0 })
+    } catch {}
+  }
+
+  return files
+}
+
 async function tick($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
+  if (ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
   if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
@@ -656,6 +698,8 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    ctx.turnEdits.clear()
+    ctx.turnFiles = []
     await setState($, 'running')
 
     return next(e)
@@ -671,6 +715,7 @@ export const register: Register = on => {
     if (!e.agentId && e.durationMs >= LONG_TASK_MS) {
       note($, { at: Date.now(), tone: 'ok', text: `this session finished a ${Math.round(e.durationMs / 60_000)}m task` }, true)
     }
+    if (ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
     await setState($, 'idle')
 
     return ran
@@ -699,8 +744,20 @@ export const register: Register = on => {
     }
     if (['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) {
       const file = input.file_path ?? input.notebook_path
-      if (typeof file === 'string') ctx.edits.set(normPath(file), Date.now())
+      if (typeof file === 'string') {
+        ctx.edits.set(normPath(file), Date.now())
+        ctx.turnEdits.set(normPath(file), file)
+      }
     }
+    if (e.tool === 'TodoWrite') {
+      const plan = planOf(input)
+      if (plan) {
+        ctx.plan = plan
+        ctx.planAt = Date.now()
+      }
+    }
+    const source = sourceOf(e.tool, input, Date.now())
+    if (source) ctx.sources = addSource(ctx.sources, source)
 
     let isOk = false
     try {

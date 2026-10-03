@@ -15,6 +15,7 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { bytes, collisionsOf, isDiskLow } from './monitor'
+import { progressSections } from './progress-view'
 
 export const PANE = 'dev-dash'
 
@@ -631,6 +632,20 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       </Box>
     )
 
+    const progress = progressSections({
+      Box,
+      Text,
+      Heading,
+      folded,
+      sessions: s.sessions,
+      selfId: s.selfId,
+      W,
+      isNarrow,
+      now,
+      tone: TONE,
+      fmt: { ago, cut, bar },
+    })
+
     // ---- footer ---------------------------------------------------------------
     const footer = (
       <Box flexDirection="row" marginTop={1}>
@@ -652,7 +667,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           onPress={() => $.command.run({ command: 'dash-refresh', args: '' })}
         />
         <Text dimColor wrap="truncate-end">
-          {e.props.isFocused ? '  1-6 fold · a alerts · ↑↓ scroll · esc back' : isNarrow ? '  ctrl+x tab: keys' : '  ctrl+x tab for keys · 1-6 fold · a alerts'}
+          {e.props.isFocused ? '  1-9 fold · a alerts · ↑↓ scroll · esc back' : isNarrow ? '  ctrl+x tab: keys' : '  ctrl+x tab for keys · 1-9 fold · a alerts'}
         </Text>
       </Box>
     )
@@ -666,6 +681,9 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         {monitor}
         {work}
         {prSection}
+        {progress.plan}
+        {progress.sources}
+        {progress.files}
         {footer}
       </Box>
     )

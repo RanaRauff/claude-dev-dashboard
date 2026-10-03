@@ -39,6 +39,9 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | **Monitor** | 4 | Usage limits (5-hour, 7-day) with a forecast of when you'll run out at the current pace, context bars per session with a per-turn sparkline and prompt-cache hit rate, free disk space, and a live event feed. |
 | **Work in flight** | 5 | Current branch, ahead/behind, uncommitted lines (+/−), stashes, recent and merged branches, and worktrees. |
 | **PRs & CI** | 6 | Your open PRs across all your GitHub repos, with CI, review state, age and conflicts, plus the PRs waiting for your review. |
+| **Plan** | 7 | A progress bar per session that keeps a todo list (`TodoWrite`): done of total, and the task in progress. A finished plan stays for 10 minutes. Plugin sessions only. |
+| **Sources** | 8 | URLs and searches sessions fetched (`WebFetch`, `WebSearch`), newest first, with the session that made them. Plugin sessions only. |
+| **Files** | 9 | Files each session edited this turn, with lines added and removed against `HEAD`. Plugin sessions only. |
 
 Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **r** refreshes, **h** hides the pane.
 

@@ -241,3 +241,66 @@ test('redesigned pane adapts to narrow and wide docks', { timeoutMs: 15_000 }, a
   }
   await wide.unmount()
 })
+
+test('shows plan progress, sources and files changed from session heartbeats', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const beat = {
+    id: 'worker', name: 'Build login', app: 'cli', hasPlugin: true, waitingFor: '', cwd: '/w/api', repo: 'api', branch: 'feat/login',
+    state: 'running', stateSince: now - 5_000, startedAt: now - 600_000, lastTool: 'Edit', costUsd: 0.2, contextPct: 30, updatedAt: now,
+    stuck: '', editing: [], risky: '', ctxTrend: [], cacheHitPct: null,
+    plan: { done: 2, total: 5, current: 'Writing the login form' }, planAt: now - 20_000,
+    sources: [
+      { at: now - 60_000, kind: 'fetch', label: 'https://www.example.com/docs/auth/?x=1' },
+      { at: now - 120_000, kind: 'search', label: 'oauth device flow' },
+    ],
+    turnFiles: [
+      { path: '/w/api/src/login.ts', added: 40, removed: 3 },
+      { path: '/w/api/src/form.tsx', added: 12, removed: 0 },
+    ],
+  }
+  const files = new Map<string, string>([['/cfg/dev-dash/sessions/worker.json', JSON.stringify(beat)]])
+  const unify = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
+  const none = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now - 60_000, context: { window: 200_000, percent: 10 }, rateLimits: [], cost: { usd: 0.1 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('ui.close', async () => ({ value: undefined }))
+  on('process.run', async () => none)
+  on('fs.write', async (_$, e) => {
+    files.set(unify(e.path), e.text)
+    return { value: undefined }
+  })
+  on('fs.list', async (_$, e) => {
+    const dir = `${unify(e.path)}/`
+    const names = [...files.keys()].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
+    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: 1, mtimeMs: now, isLink: false })) }
+  })
+  on('fs.stat', async () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.read', async (_$, e) => ({ value: files.get(unify(e.path)) ?? '' }))
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'dash', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+
+  const ui = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  const has = async (re: RegExp) => {
+    if (!(await ui.find({ type: 'Text', text: re }))) throw new Error(`no text matching ${re}`)
+  }
+  await has(/Plan \(1\)/)
+  await has(/2\/5/)
+  await has(/↳ Writing the login form/)
+  await has(/Sources \(2\)/)
+  await has(/example\.com\/docs\/auth/)
+  await has(/oauth device flow/)
+  await has(/Files \(2\)/)
+  await has(/\+52/)
+  await has(/login\.ts/)
+  await ui.unmount()
+})
