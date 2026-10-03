@@ -440,7 +440,24 @@ test('draws each watch as a box with its source icon and marks, and says what to
   await has(/Invoice 1042/)
   await has(/ready to merge/)
   await has(/Gmail connector/)
+  // The header's activity trace is "claude beat", drawn with braille dots, not bars.
+  await has(/claude beat/)
+  await has(/[⠀-⣿]{4,}/)
+  expect(await ui.find({ type: 'Text', text: /[▁-█]{3,}/ })).toBeUndefined()
+  // The official marks (GitHub, Gmail) from a Nerd Font are the default.
+  await has(//)
+  await has(/\u{f02ab}/u)
   await ui.unmount()
+
+  // `/dash-icons emoji` switches every box to characters any font has, and is remembered.
+  expect(JSON.stringify(await $.command.run({ command: 'dash-icons', args: '' }))).toContain('nerd | emoji | ascii')
+  await $.command.run({ command: 'dash-icons', args: 'emoji' })
+  expect(store.get('iconStyle')).toBe('emoji')
+  const emoji = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  if (!(await emoji.find({ type: 'Text', text: /🐙/ }))) throw new Error('no GitHub emoji after /dash-icons emoji')
+  if (!(await emoji.find({ type: 'Text', text: /✉/ }))) throw new Error('no mail emoji after /dash-icons emoji')
+  expect(await emoji.find({ type: 'Text', text: // })).toBeUndefined()
+  await emoji.unmount()
 
   // Something dev-dash has no adapter for is told what to connect, and nothing is stored for it.
   const before = JSON.stringify(store.get('watches'))

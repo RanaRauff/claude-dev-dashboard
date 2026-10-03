@@ -15,6 +15,7 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { bytes, collisionsOf, isDiskLow } from './monitor'
+import { beatLine } from './beat'
 import { progressSections } from './progress-view'
 import { watchingSection } from './watch-view'
 
@@ -221,7 +222,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const agents = s.agents ?? []
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
-    const spark = sparkline(samples, L.sparkCells)
+    // "claude beat": the activity trace as a heartbeat-monitor line (a flatline when nothing is running).
+    const beat = beatLine(samples, L.sparkCells, isNarrow ? 1 : 2)
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -244,9 +246,16 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             ))}
           </Box>
         )}
-        <Box flexDirection="row">
-          {spark && <Text color={TONE.info}>{spark} </Text>}
-          <Text dimColor wrap="truncate-end">{spark ? 'activity · ' : ''}synced {ago(now - s.updatedAt)} ago</Text>
+        <Box flexDirection="row" columnGap={1}>
+          <Box flexDirection="column">
+            <Text bold color={TONE.accent}>♥ claude beat</Text>
+            <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
+          </Box>
+          <Box flexDirection="column">
+            {beat.map(row => (
+              <Text color={TONE.ok}>{row}</Text>
+            ))}
+          </Box>
         </Box>
       </Box>
     )
@@ -647,6 +656,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       Heading,
       folded,
       watches: s.watches ?? [],
+      iconStyle: s.iconStyle,
       W,
       now,
       tone: TONE,

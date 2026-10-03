@@ -116,6 +116,9 @@ export type PrInfo = { error: string | null; mine: PrRow[]; toReview: PrRow[]; f
 /** A pull request the person asked to keep an eye on with /dash-watch. */
 export type WatchKind = 'pr' | 'issue' | 'run' | 'mail'
 
+/** How the icons for GitHub, Gmail and the like are drawn: the official marks from a Nerd Font, emoji, or letters. */
+export type IconStyle = 'nerd' | 'emoji' | 'ascii'
+
 export type WatchTone = 'ok' | 'warn' | 'bad' | 'info' | 'mute'
 
 /** One small status mark in a watch's box: an icon, a word or two, and how it should be coloured. */
@@ -180,6 +183,8 @@ export type Snapshot = {
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
   watches?: WatchRow[]
+  /** Which icon set the Watching boxes use; `/dash-icons` changes it. */
+  iconStyle?: IconStyle
   updatedAt: number
 }
 

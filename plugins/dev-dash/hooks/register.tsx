@@ -9,6 +9,7 @@ import type {
   ChangedFile,
   EventRow,
   GitInfo,
+  IconStyle,
   LimitRow,
   PlanProgress,
   PrInfo,
@@ -46,6 +47,7 @@ import {
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
+import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
 import type { Reading } from './watch'
@@ -175,6 +177,7 @@ const ctx = {
   turnEdits: new Map<string, string>(),
   turnFiles: [] as ChangedFile[],
   watches: [] as WatchRow[],
+  iconStyle: DEFAULT_ICON_STYLE as IconStyle,
   watchPolledAt: 0,
 }
 
@@ -698,6 +701,7 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       watches: ctx.watches,
+      iconStyle: ctx.iconStyle,
       updatedAt: Date.now(),
     }
     return next
@@ -868,6 +872,9 @@ export const register: Register = on => {
     await $.command.register({ name: 'dash-summaries', description: 'Write a one-line summary per session after each turn (on | off; uses a small model call per turn)' })
     const storedSummaries = await $.store.get('summariesOn').catch(() => undefined)
     if (typeof storedSummaries === 'boolean') ctx.summariesOn = storedSummaries
+    await $.command.register({ name: 'dash-icons', description: 'Icons for GitHub, Gmail and the like: nerd (official marks, needs a Nerd Font) | emoji | ascii' })
+    const storedIcons = parseIconStyle(String(await $.store.get('iconStyle').catch(() => '')))
+    if (storedIcons) ctx.iconStyle = storedIcons
     await $.command.register({ name: 'dash-handoff', description: 'Write a handoff note when a session compacts (on | off, or toggle)' })
     const storedHandoff = await $.store.get('handoffOn').catch(() => undefined)
     if (typeof storedHandoff === 'boolean') ctx.handoffOn = storedHandoff
@@ -1068,6 +1075,18 @@ export const register: Register = on => {
     const unread = w?.problem ? ` I cannot read it yet. ${w.problem} It keeps trying while the pane is open.` : ''
 
     return { text: `Watching ${w ? watchLabel(w) : 'it'}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
+  })
+
+  on('command.run', { command: 'dash-icons' }, async ($, e) => {
+    const style = parseIconStyle(e.args ?? '')
+    if (!style) {
+      return { text: `Icons are ${ctx.iconStyle}. Choose one: ${ICON_STYLES.join(' | ')}. nerd draws the official GitHub and Gmail marks and needs a Nerd Font in your terminal (nerdfonts.com); emoji and ascii work with any font.` }
+    }
+    ctx.iconStyle = style
+    await $.store.set('iconStyle', style).catch(() => undefined)
+    await publish($, undefined)
+
+    return { text: `Icons: ${style}.${style === 'nerd' ? ' If the GitHub and Gmail marks show as empty boxes, your terminal font is not a Nerd Font: use /dash-icons emoji.' : ''}` }
   })
 
   on('command.run', { command: 'dash-handoff' }, async ($, e) => {

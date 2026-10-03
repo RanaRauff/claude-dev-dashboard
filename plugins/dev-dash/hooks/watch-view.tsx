@@ -5,7 +5,8 @@
 // Kept out of render.tsx so changes to the pane and to this section merge cleanly; render.tsx passes in what it
 // already has. Hidden when nothing is watched.
 
-import type { DashSection, WatchChip, WatchKind, WatchRow, WatchTone } from '../types'
+import type { DashSection, IconStyle, WatchChip, WatchKind, WatchRow, WatchTone } from '../types'
+import { BRAND, iconFor, sourceOf } from './icons'
 
 // The Box, Text and Heading render.tsx resolved for this render.
 // biome-ignore lint/suspicious/noExplicitAny: element components come from `$.ui.resolve(e)`
@@ -17,22 +18,18 @@ export type WatchView = {
   Heading: (p: { id: DashSection; hotkey: string; title: string; tone?: string; summary: string }) => unknown
   folded: readonly DashSection[]
   watches: readonly WatchRow[]
+  iconStyle?: IconStyle
   W: number
   now: number
   tone: { ok: string; warn: string; bad: string; info: string; mute: string }
   fmt: { ago: (ms: number) => string; cut: (s: string, n: number) => string }
 }
 
-/** Where each kind lives and what to call it: the icon that says it at a glance, and the short label. */
-export const KIND_LOOK: Record<WatchKind, { icon: string; label: string }> = {
-  pr: { icon: '🐙', label: 'PR' },
-  issue: { icon: '🐙', label: 'Issue' },
-  run: { icon: '🐙', label: 'Run' },
-  mail: { icon: '✉', label: 'Mail' },
-}
+/** What to call each kind. Where it lives is drawn by the source icon (see icons.ts). */
+export const KIND_LABEL: Record<WatchKind, string> = { pr: 'PR', issue: 'Issue', run: 'Run', mail: 'Mail' }
 
 /** The box's heading: `PR #11`, `Issue #4`, `Run #123456`, or just `Mail`. */
-export const kindName = (w: WatchRow) => (w.kind === 'mail' ? KIND_LOOK.mail.label : `${KIND_LOOK[w.kind].label} #${w.number}`)
+export const kindName = (w: WatchRow) => (w.kind === 'mail' ? KIND_LABEL.mail : `${KIND_LABEL[w.kind]} #${w.number}`)
 
 /** What the box says it is: the title read from the source, or the subject being watched, or the repository. */
 export const subjectOf = (w: WatchRow) => w.title || w.query || w.repo
@@ -43,7 +40,7 @@ export const boxWidth = (W: number) => (W >= 76 ? Math.floor((W - 1) / 2) : W)
 const toneColor = (t: WatchTone | undefined, c: WatchView['tone']) => (t === 'ok' ? c.ok : t === 'warn' ? c.warn : t === 'bad' ? c.bad : t === 'info' ? c.info : c.mute)
 
 export function watchingSection(v: WatchView) {
-  const { Box, Text, Heading, folded, watches, W, now, tone, fmt } = v
+  const { Box, Text, Heading, folded, watches, iconStyle, W, now, tone, fmt } = v
   if (watches.length === 0) return null
   const fired = watches.filter(w => w.firedAt > 0)
   // What has changed comes first, then what is going wrong, then the rest in the order they were added.
@@ -54,12 +51,12 @@ export function watchingSection(v: WatchView) {
   const card = (w: WatchRow) => {
     const isFired = w.firedAt > 0
     const border = w.problem ? tone.bad : isFired ? tone.warn : toneColor(w.tone, tone)
-    const look = KIND_LOOK[w.kind]
+    const source = sourceOf(w.kind)
     const chips: WatchChip[] = w.chips ?? []
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={border} paddingX={1} width={bw}>
         <Box flexDirection="row">
-          <Text>{look.icon} </Text>
+          <Text bold color={BRAND[source]}>{iconFor(source, iconStyle)} </Text>
           <Text bold>{kindName(w)}</Text>
           {isFired && <Text bold color={tone.warn}> ◆</Text>}
           <Text dimColor wrap="truncate-end"> · {w.checkedAt ? fmt.ago(now - w.checkedAt) : 'new'}</Text>
