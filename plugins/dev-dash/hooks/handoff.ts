@@ -45,6 +45,19 @@ export const handoffName = (at: number, sessionId: string) => {
   return `${day}-${sessionId.replace(/[^A-Za-z0-9-]/g, '').slice(0, 8) || 'session'}.md`
 }
 
+/** How many notes are kept in all; older ones are deleted when a new one is written. */
+export const HANDOFFS_KEPT = 30
+
+/** Exactly what `handoffName` makes, so nothing else in the folder is ever touched. */
+const NOTE_NAME = /^\d{8}-\d{6}-[A-Za-z0-9-]{1,8}\.md$/
+
+/** The notes to delete so that only the newest `keep` remain. The name starts with the time, so it sorts by age. */
+export const staleNotes = (names: readonly string[], keep = HANDOFFS_KEPT): string[] =>
+  names
+    .filter(n => NOTE_NAME.test(n))
+    .sort()
+    .slice(0, Math.max(0, names.filter(n => NOTE_NAME.test(n)).length - keep))
+
 const tokens = (n: number | undefined) => (n === undefined ? '' : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 
 /** A cut that says it cut. */
