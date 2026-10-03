@@ -7,7 +7,13 @@ export type PlanProgress = { done: number; total: number; current: string }
 export type SourceRow = { at: number; kind: 'fetch' | 'search'; label: string }
 
 /** A file edited this turn, with lines added and removed versus HEAD. */
-export type ChangedFile = { path: string; added: number; removed: number }
+export type ChangedFile = {
+  path: string
+  added: number
+  removed: number
+  /** False when git could not count its lines (so added and removed are not real): shown without +/-. */
+  counted?: boolean
+}
 
 /** The last test run a session started: a runner label (never the command line), whether it passed, and when. */
 export type TestRun = { ok: boolean; at: number; runner: string }
@@ -130,6 +136,48 @@ export type PrRow = {
 
 export type PrInfo = { error: string | null; mine: PrRow[]; toReview: PrRow[]; fetchedAt: number }
 
+/** What /dash-watch can keep an eye on: a GitHub pull request, issue or Actions run. */
+export type WatchKind = 'pr' | 'issue' | 'run'
+
+/** How the icon for where a watch lives is drawn: emoji (any font), the official mark from a Nerd Font, or letters. */
+export type IconStyle = 'emoji' | 'nerd' | 'ascii'
+
+export type WatchTone = 'ok' | 'warn' | 'bad' | 'info' | 'mute'
+
+/** One small status mark in a watch's box: an icon, a word or two, and how it should be coloured. */
+export type WatchChip = { icon: string; text: string; tone: WatchTone }
+
+/** Something the person asked to keep an eye on with /dash-watch. */
+export type WatchRow = {
+  /** `pr:<owner/repo>#<number>`, `issue:…` or `run:…`, lower case. */
+  id: string
+  kind: WatchKind
+  /** `owner/repo`. */
+  repo: string
+  /** The pull request or issue number, or the Actions run id. */
+  number: number
+  title: string
+  /** The status marks as last read; a list saved before there were any has none. */
+  chips?: WatchChip[]
+  /** The box's overall colour as last read. */
+  tone?: WatchTone
+  addedAt: number
+  /** When it stops being polled and drops off the list: 24 hours after it was added, or after it last fired. */
+  expiresAt: number
+  /** The comparable state from the last look (`OPEN|passing|approved`); '' until the first look. */
+  value: string
+  /** The same, in words. */
+  detail: string
+  checkedAt: number
+  changedAt: number
+  /** When it last changed after the baseline look; 0 if it has not. */
+  firedAt: number
+  /** What changed, in words (`CI failing`, `merged`). */
+  fired: string
+  /** True once the PR is merged or closed: nothing left to poll. */
+  done: boolean
+}
+
 export type Snapshot = {
   selfId: string
   sessions: SessionRow[]
@@ -148,10 +196,14 @@ export type Snapshot = {
   nowPlaying: NowPlaying | null
   git: GitInfo | null
   prs: PrInfo | null
+  /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
+  watches?: WatchRow[]
+  /** Which icon set the Watching boxes use; `/dash-icons` changes it. */
+  iconStyle?: IconStyle
   updatedAt: number
 }
 
-export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files'
+export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files' | 'watching'
 
 declare module 'claude-code' {
   interface PluginState {

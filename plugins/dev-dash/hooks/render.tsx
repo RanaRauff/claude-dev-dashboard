@@ -22,6 +22,7 @@ import { TABS, isTab } from './entertainment'
 import { progressSections } from './progress-view'
 import { customView, entertainmentView } from './tabs-view'
 import { testBadge } from './testrun'
+import { watchingSection } from './watch-view'
 
 export const PANE = 'dev-dash'
 
@@ -719,6 +720,18 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       </Box>
     )
 
+    const watching = watchingSection({
+      Box,
+      Text,
+      Heading,
+      folded,
+      watches: s.watches ?? [],
+      iconStyle: s.iconStyle,
+      W,
+      now,
+      tone: TONE,
+      fmt: { ago, cut },
+    })
     const progress = progressSections({
       Box,
       Text,
@@ -792,6 +805,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         {tabBar}
         {tab === 'dashboard' ? header : statusLine}
         {helpPanel}
+        {tab === 'dashboard' && watching}
         {tab === 'dashboard' && attention}
         {tab === 'dashboard' && sessions}
         {tab === 'dashboard' && agentsSection}
