@@ -54,5 +54,5 @@ Mocks: https://claude.ai/artifact/JYNHbTvB7nbN8Qx8TgTai3 (private link; the same
 ## Done
 - [x] Dashboard pane, agents, monitor, band above the prompt, alerts (PRs #1, #2, #3)
 - [x] Research on what people build with mods (PR #5)
-- [x] Connor invited as a collaborator; PR #6 (Plan, Sources, Files) and PR #9 (handoff on /compact) merged
+- [x] Connor invited as a collaborator; PRs #6 (Plan, Sources, Files), #9 and #10 (handoff on /compact, retention, off switch) and #11 (test badge) merged
 - [x] Opt-in one-line session summaries (#4)

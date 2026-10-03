@@ -19,6 +19,7 @@ import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './k
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { progressSections } from './progress-view'
+import { testBadge } from './testrun'
 
 export const PANE = 'dev-dash'
 
@@ -421,6 +422,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           {r.summary && (
             <Box paddingLeft={7}>
               <Text color={TONE.info} wrap="truncate-end">↳ {cut(r.summary, W - 10)}</Text>
+            </Box>
+          )}
+          {r.lastTest && (
+            <Box paddingLeft={7}>
+              <Text color={r.lastTest.ok ? TONE.ok : TONE.bad} wrap="truncate-end">{testBadge(r.lastTest, now, ago)}</Text>
             </Box>
           )}
           {hasCtx ? (
