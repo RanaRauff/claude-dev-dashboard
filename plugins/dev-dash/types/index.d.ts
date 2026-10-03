@@ -2,6 +2,9 @@ export type SessionState = 'running' | 'idle' | 'waiting' | 'ended'
 
 export type SessionRow = {
   id: string
+  name: string
+  app: string
+  hasPlugin: boolean
   cwd: string
   repo: string
   branch: string

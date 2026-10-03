@@ -74,3 +74,61 @@ test('/dash shows attention, work in flight and PRs from git and gh', { timeoutM
   expect(hidden.text).toBe('Dashboard hidden.')
   expect(panes).toEqual([])
 })
+
+test('lists every live Claude session, with or without the plugin', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const files = new Map<string, string>([
+    ['/cfg/sessions/100.json', JSON.stringify({ pid: 100, sessionId: 'self', cwd: '/w/web', startedAt: now - 60_000, name: 'web work', entrypoint: 'cli', status: 'busy' })],
+    ['/cfg/sessions/200.json', JSON.stringify({ pid: 200, sessionId: 'other', cwd: '/w/api', startedAt: now - 120_000, name: 'Claude mods', entrypoint: 'claude-desktop', status: 'idle', statusUpdatedAt: now - 30_000 })],
+    ['/cfg/sessions/300.json', JSON.stringify({ pid: 300, sessionId: 'gone', cwd: '/w/old', startedAt: now - 999_000, name: 'dead session', status: 'idle' })],
+    ['/cfg/sessions/200.secret.key', 'never read'],
+  ])
+  const reads: string[] = []
+  const unify = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
+  const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now - 60_000, context: { window: 200_000, percent: 42 }, rateLimits: [], cost: { usd: 0.5 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('process.run', async (_$, e) => {
+    const [cmd, ...args] = e.argv
+    if (cmd === 'tasklist') return ok('"claude.exe","100","Console","5","1 K"\n"claude.exe","200","Console","5","1 K"\n')
+    if (cmd === 'git' && args.includes('--abbrev-ref')) return ok(args.includes('/w/api') ? 'feat/login\n' : 'main\n')
+    if (cmd === 'git' && args.includes('--show-toplevel')) return ok(args.includes('/w/api') ? '/w/api\n' : '/w/web\n')
+    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.write', async (_$, e) => {
+    files.set(unify(e.path), e.text)
+    return { value: undefined }
+  })
+  on('fs.list', async (_$, e) => {
+    const dir = `${unify(e.path)}/`
+    const names = [...files.keys()].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
+    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: 1, mtimeMs: now, isLink: false })) }
+  })
+  on('fs.read', async (_$, e) => {
+    reads.push(unify(e.path))
+    return { value: files.get(unify(e.path)) ?? '' }
+  })
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'dash', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+
+  const ui = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  const has = async (re: RegExp) => {
+    if (!(await ui.find({ type: 'Text', text: re }))) throw new Error(`no text matching ${re}`)
+  }
+  await has(/Sessions \(2\)/)
+  await has(/api@feat\/login · idle/)
+  await has(/Claude mods · desktop .*no plugin/)
+  await has(/web@main \(this\)/)
+  await has(/ctx 42%/)
+  expect(await ui.find({ type: 'Text', text: /dead session/ })).toBeUndefined()
+  expect(reads.some(p => p.endsWith('.key'))).toBe(false)
+  await ui.unmount()
+})

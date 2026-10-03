@@ -59,12 +59,16 @@ const toRow = (p: GhPr): PrRow => ({
 const ctx = {
   selfId: '',
   dir: '',
+  registryDir: '',
   isOpen: false,
   ticks: 0,
   prs: null as PrInfo | null,
 }
 const me = {
   id: '',
+  name: '',
+  app: '',
+  hasPlugin: true,
   cwd: '',
   repo: '',
   branch: '',
@@ -96,21 +100,121 @@ async function heartbeat($: Engine) {
   await $.fs.write(`${ctx.dir}/${ctx.selfId}.json`, JSON.stringify(row)).catch(() => undefined)
 }
 
-async function readSessions($: Engine): Promise<SessionRow[]> {
+// Claude Code's own record of running sessions: one <pid>.json per process,
+// written whether or not this plugin is loaded. Only *.json is read; the
+// .key files beside them are not ours to touch.
+type RegistryEntry = {
+  pid: number
+  sessionId: string
+  cwd: string
+  startedAt: number
+  name?: string
+  entrypoint?: string
+  status?: string
+  statusUpdatedAt?: number
+  updatedAt?: number
+}
+
+const stateOf = (status: string | undefined): SessionState => {
+  const s = (status ?? '').toLowerCase()
+  if (/wait|permission|input|blocked|ask/.test(s)) return 'waiting'
+  if (/busy|running|working|thinking/.test(s)) return 'running'
+  return 'idle'
+}
+
+const appOf = (entrypoint: string | undefined) =>
+  !entrypoint ? '' : entrypoint === 'claude-desktop' ? 'desktop' : entrypoint === 'cli' ? 'cli' : entrypoint.replace(/^claude-/, '')
+
+const gitCache = new Map<string, { at: number; repo: string; branch: string }>()
+
+async function livePids($: Engine): Promise<Set<number> | null> {
+  try {
+    const r = await $.process.run(['tasklist', '/FO', 'CSV', '/NH'], { timeoutMs: 10_000 })
+    if (r.exitCode === 0) {
+      return new Set(lines(r.stdout).map(l => Number(l.split('","')[1])).filter(n => n > 0))
+    }
+  } catch {}
+  try {
+    const r = await $.process.run(['ps', '-A', '-o', 'pid='], { timeoutMs: 10_000 })
+    if (r.exitCode === 0) return new Set(lines(r.stdout).map(Number).filter(n => n > 0))
+  } catch {}
+
+  return null
+}
+
+async function whereIs($: Engine, cwd: string) {
+  const hit = gitCache.get(cwd)
+  if (hit && Date.now() - hit.at < 30_000) return hit
+  const [top, branch] = await Promise.all([
+    git($, ['-C', cwd, 'rev-parse', '--show-toplevel']),
+    git($, ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD']),
+  ])
+  const found = { at: Date.now(), repo: base(top?.trim() || cwd), branch: branch?.trim() || '' }
+  gitCache.set(cwd, found)
+
+  return found
+}
+
+async function readHeartbeats($: Engine): Promise<Map<string, SessionRow>> {
   const entries = await $.fs.list(ctx.dir).catch(() => [])
   const now = Date.now()
-  const rows: SessionRow[] = []
+  const beats = new Map<string, SessionRow>()
   for (const f of entries) {
     if (f.kind !== 'file' || !f.name.endsWith('.json')) continue
     if (f.mtimeMs > 0 && now - f.mtimeMs > STALE_MS) continue
     try {
       const row = JSON.parse(await $.fs.read(`${ctx.dir}/${f.name}`)) as SessionRow
-      if (row.state !== 'ended' && now - row.updatedAt < STALE_MS) rows.push(row)
+      if (row.id && row.state !== 'ended' && now - row.updatedAt < STALE_MS) beats.set(row.id, row)
     } catch {}
+  }
+
+  return beats
+}
+
+async function readSessions($: Engine): Promise<SessionRow[]> {
+  const [entries, alive, beats] = await Promise.all([
+    $.fs.list(ctx.registryDir).catch(() => []),
+    livePids($),
+    readHeartbeats($),
+  ])
+  const rows: SessionRow[] = []
+  const seen = new Set<string>()
+  for (const f of entries) {
+    if (f.kind !== 'file' || !f.name.endsWith('.json')) continue
+    let reg: RegistryEntry
+    try {
+      reg = JSON.parse(await $.fs.read(`${ctx.registryDir}/${f.name}`)) as RegistryEntry
+    } catch {
+      continue
+    }
+    if (!reg.sessionId || seen.has(reg.sessionId)) continue
+    if (alive && !alive.has(reg.pid)) continue
+    seen.add(reg.sessionId)
+    const beat = beats.get(reg.sessionId)
+    const where = beat?.branch ? { repo: beat.repo, branch: beat.branch } : await whereIs($, reg.cwd)
+    rows.push({
+      id: reg.sessionId,
+      name: reg.name ?? '',
+      app: appOf(reg.entrypoint),
+      hasPlugin: beat !== undefined,
+      cwd: reg.cwd,
+      repo: where.repo,
+      branch: where.branch,
+      state: beat ? beat.state : stateOf(reg.status),
+      stateSince: beat?.stateSince ?? reg.statusUpdatedAt ?? reg.startedAt,
+      startedAt: reg.startedAt,
+      lastTool: beat?.lastTool ?? '',
+      costUsd: beat?.costUsd ?? null,
+      contextPct: beat?.contextPct ?? null,
+      updatedAt: beat?.updatedAt ?? reg.updatedAt ?? reg.startedAt,
+    })
+  }
+  for (const beat of beats.values()) {
+    if (!seen.has(beat.id)) rows.push(beat)
   }
   const order: Record<SessionState, number> = { waiting: 0, running: 1, idle: 2, ended: 3 }
 
-  return rows.sort((a, b) => order[a.state] - order[b.state] || b.updatedAt - a.updatedAt)
+  return rows.sort((a, b) => order[a.state] - order[b.state] || b.startedAt - a.startedAt)
 }
 
 async function readGit($: Engine): Promise<GitInfo | null> {
@@ -213,7 +317,9 @@ export const register: Register = on => {
     const ran = await next(e)
     ctx.selfId = await $.session.id()
     const home = ((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '').replace(/\\/g, '/')
-    ctx.dir = `${home}/.claude/dev-dash/sessions`
+    const config = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
+    ctx.dir = `${config}/dev-dash/sessions`
+    ctx.registryDir = `${config}/sessions`
     me.id = ctx.selfId
     me.cwd = await $.session.cwd()
     const top = (await git($, ['rev-parse', '--show-toplevel']))?.trim()
@@ -335,15 +441,24 @@ export const register: Register = on => {
           <Box flexDirection="column">
             <Text color={stateColor[r.state]}>
               {'  '}
-              {r.state === 'running' ? '●' : r.state === 'waiting' ? '⏸' : '○'} {cut(`${r.repo}@${r.branch}`, width - 24)}
+              {r.state === 'running' ? '●' : r.state === 'waiting' ? '⏸' : '○'}{' '}
+              {cut(r.branch ? `${r.repo}@${r.branch}` : r.repo, width - 24)}
               {r.id === s.selfId ? ' (this)' : ''} · {r.state} {ago(now - r.stateSince)}
             </Text>
             <Text dimColor>
-              {'    '}up {ago(now - r.startedAt)}
-              {r.costUsd !== null ? ` · $${r.costUsd.toFixed(2)}` : ''}
-              {r.contextPct !== null ? ` · ctx ${Math.round(r.contextPct)}%` : ''}
+              {'    '}
+              {[
+                r.name,
+                r.app,
+                `up ${ago(now - r.startedAt)}`,
+                r.costUsd !== null ? `$${r.costUsd.toFixed(2)}` : '',
+                r.contextPct !== null ? `ctx ${Math.round(r.contextPct)}%` : '',
+                r.lastTool,
+                r.hasPlugin ? '' : 'no plugin: cost/ctx n/a',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
               {r.contextPct !== null && r.contextPct >= 80 ? ' ⚠ near compaction' : ''}
-              {r.lastTool ? ` · ${r.lastTool}` : ''}
             </Text>
           </Box>
         ))}

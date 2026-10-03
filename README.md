@@ -30,7 +30,7 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | Section | Contents |
 | --- | --- |
 | **Attention** | Sessions waiting on a permission prompt or a question, your PRs with failing CI or merge conflicts, and PRs waiting for your review (oldest first). |
-| **Sessions** | Every Claude Code session on this machine running the plugin: repo and branch, state (running, idle, waiting) and for how long, uptime, cost, context use (warning from 80%), and the last tool used. |
+| **Sessions** | Every running Claude Code session on this machine, CLI or desktop, whether or not it has the plugin: name, repo and branch, state (running, idle, waiting) and for how long, and uptime. Sessions that also load the plugin add cost, context use (warning from 80%), the last tool used, and precise waiting detection. |
 | **Work in flight** | Current branch, ahead/behind its upstream, uncommitted and stashed changes, recent branches with merged ones highlighted, and worktrees with the session using each. |
 | **PRs & CI** | Your open PRs with CI state, review decision, age and conflicts, and the PRs requesting your review. |
 
@@ -59,7 +59,9 @@ The dashboard never opens by itself.
 
 ## How it works
 
-- Each session running the plugin writes a small status file to `~/.claude/dev-dash/sessions/<session-id>.json` every 5 seconds and whenever its state changes. The pane reads all of them, so **only sessions that have the plugin installed appear**. A session that stops reporting drops off after 90 seconds.
+- The session list comes from Claude Code's own registry of running sessions (`~/.claude/sessions/<pid>.json`), filtered to processes that are still alive, so every session appears whether or not it has the plugin. Only the `.json` files there are read. This registry is internal to Claude Code and may change between releases.
+- Each session that does load the plugin also writes a status file to `~/.claude/dev-dash/sessions/<session-id>.json` every 5 seconds and whenever its state changes, adding cost, context use, last tool and waiting detection.
+- `CLAUDE_CONFIG_DIR` is honoured if you have moved Claude's config directory.
 - Git data is read from the session's working directory every 5 seconds.
 - PRs are fetched with `gh pr list` once a minute, and only while the pane is open.
 - Nothing leaves your machine except the `gh` calls to GitHub.
