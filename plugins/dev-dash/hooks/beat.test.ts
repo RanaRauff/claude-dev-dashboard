@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { BEAT_DOTS, baselineOf, claudeBeat, ecgLevels, plotLevels } from './beat'
-
-const braille = (bits: number) => String.fromCharCode(0x2800 + bits)
+import { BEAT_DOTS, baselineOf, claudeBeat, drawLine, ecgLevels } from './beat'
 
 describe('claude beat: the line as levels', () => {
-  test('the baseline sits low enough to leave room above for spikes and a little below for the dip', () => {
+  test('the baseline sits low enough to leave room above for spikes and a row below for the dip', () => {
+    expect(baselineOf(2)).toBe(0)
+    expect(baselineOf(3)).toBe(1)
     expect(baselineOf(4)).toBe(1)
     expect(baselineOf(8)).toBe(3)
   })
@@ -16,9 +16,11 @@ describe('claude beat: the line as levels', () => {
   })
 
   test('one busy sync is one heartbeat: bump, spike, dip below the baseline, rest, bump', () => {
-    // 4 levels: baseline 1, room 2 above and 1 below.
+    // 4 rows: baseline 1, room 2 above and 1 below.
     expect(ecgLevels([3], BEAT_DOTS, 4)).toEqual([2, 1, 3, 0, 1, 2])
-    // 8 levels: baseline 3, room 4 above and 3 below.
+    // 3 rows: baseline 1, room 1 above and 1 below, so the small bumps flatten into the baseline.
+    expect(ecgLevels([3], BEAT_DOTS, 3)).toEqual([1, 1, 2, 0, 1, 1])
+    // 8 rows: baseline 3, room 4 above and 3 below.
     expect(ecgLevels([3], BEAT_DOTS, 8)).toEqual([4, 3, 7, 1, 3, 5])
   })
 
@@ -51,42 +53,46 @@ describe('claude beat: the line as levels', () => {
   })
 })
 
-describe('claude beat: the line as braille', () => {
-  test('the flatline is a row of mid-low dashes', () => {
-    expect(claudeBeat([], 4, 1)).toEqual(['⠤⠤⠤⠤'])
+describe('claude beat: the line as solid characters', () => {
+  test('the flatline is one unbroken run of ─ on the baseline row', () => {
+    expect(claudeBeat([], 4, 4)).toEqual(['    ', '    ', '────', '    '])
   })
 
-  test('a rise is a vertical stroke at the new column; a fall the same, downwards', () => {
-    // columns [0, 3]: a dot at the bottom left, then a full-height stroke on the right.
-    expect(plotLevels([0, 3], 1, 1)).toEqual([braille(0x40 | 0x08 | 0x10 | 0x20 | 0x80)])
-    // columns [3, 0]: a dot at the top left, then a full-height stroke on the right.
-    expect(plotLevels([3, 0], 1, 1)).toEqual([braille(0x01 | 0x08 | 0x10 | 0x20 | 0x80)])
+  test('a rise turns up in the new column and a fall turns down', () => {
+    // up from level 0 to 2: ╯ where it leaves, │ between, ╭ where it arrives
+    expect(drawLine([0, 2], 3)).toEqual([' ╭', ' │', '─╯'])
+    // down from level 2 to 0: ╮ where it leaves, │ between, ╰ where it arrives
+    expect(drawLine([2, 0], 3)).toEqual(['─╮', ' │', ' ╰'])
   })
 
-  test('one heartbeat across three cells', () => {
-    // levels [2, 1, 3, 0, 1, 2]
-    expect(claudeBeat([3], 3, 1)).toEqual([braille(0x02 | 0x10 | 0x20) + braille(0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80) + braille(0x40 | 0x04 | 0x10 | 0x20)])
+  test('one heartbeat across six columns is a connected ECG', () => {
+    expect(claudeBeat([3], 6, 4)).toEqual(['  ╭╮  ', '─╮││ ╭', ' ╰╯│╭╯', '   ╰╯ '])
   })
 
-  test('two rows have twice the levels: the spike reaches the top row and the dip stays in the lower one', () => {
-    const rows = claudeBeat([3], 3, 2)
-    expect(rows.length).toBe(2)
-    expect(rows[0]).not.toBe(braille(0).repeat(3))
-    expect(rows[1]).not.toBe(braille(0).repeat(3))
+  test('every column has the line in it: no gaps between neighbours', () => {
+    for (const rows of [3, 4, 5]) {
+      const grid = claudeBeat([0, 3, 0, 1, 2, 0, 0, 3], 24, rows)
+      for (let x = 0; x < 24; x++) expect(grid.some(r => r[x] !== ' ')).toBe(true)
+    }
   })
 
-  test('a busy trace has dots above and below the flat dashes; an idle one has none', () => {
-    const flat = claudeBeat([0, 0, 0, 0], 8, 2).join('')
-    const busy = claudeBeat([0, 3, 0, 1, 2, 0, 0, 3], 8, 2).join('')
-    expect(flat).not.toBe(busy)
-    expect(new Set(flat.replace(/\n/g, '')).size).toBeLessThanOrEqual(2)
-    expect(new Set(busy).size).toBeGreaterThan(3)
+  test('the spike reaches the top row and the dip reaches the bottom row', () => {
+    const grid = claudeBeat([4], 6, 4)
+    expect(grid[0].trim().length).toBeGreaterThan(0)
+    expect(grid[3].trim().length).toBeGreaterThan(0)
   })
 
-  test('every character is braille and the size is never below one cell', () => {
-    for (const row of claudeBeat([0, 1, 4, 2, 0, 0, 5, 1, 0], 6, 2)) expect(row).toMatch(/^[⠀-⣿]{6}$/)
-    expect(claudeBeat([1], 0).length).toBe(1)
-    expect(claudeBeat([1], 3, 0).length).toBe(1)
+  test('an idle trace and a busy trace differ, and only line characters and spaces are used', () => {
+    const idle = claudeBeat([0, 0, 0, 0], 24, 4).join('\n')
+    const busy = claudeBeat([0, 3, 0, 1, 2, 0, 0, 3], 24, 4).join('\n')
+    expect(idle).not.toBe(busy)
+    expect(busy).toMatch(/^[─│╭╮╰╯ \n]+$/)
+  })
+
+  test('the size is never below one column and one row', () => {
+    expect(claudeBeat([1], 0).length).toBe(4)
     expect(claudeBeat([1], 0)[0].length).toBe(1)
+    expect(claudeBeat([1], 3, 0).length).toBe(1)
+    expect(claudeBeat([1], 3, 0)[0].length).toBe(3)
   })
 })

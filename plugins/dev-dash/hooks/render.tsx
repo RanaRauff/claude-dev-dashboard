@@ -223,7 +223,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
     // "claude beat": the activity as an ECG, a heartbeat on a flat baseline wherever sessions were busy.
-    const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 1 : 2)
+    const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 3 : 4)
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -253,7 +253,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           </Box>
           <Box flexDirection="column">
             {beat.map(row => (
-              <Text color="red">{row}</Text>
+              <Text bold color="red">{row}</Text>
             ))}
           </Box>
         </Box>

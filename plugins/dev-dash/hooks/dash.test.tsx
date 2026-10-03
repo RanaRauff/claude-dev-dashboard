@@ -483,10 +483,11 @@ test('draws each watch as a box with its source icon and marks, and says what to
   await has(/Invoice 1042/)
   await has(/ready to merge/)
   await has(/Gmail connector/)
-  // The header's activity trace is "claude beat", drawn with braille dots, not bars.
+  // The header's activity trace is "claude beat": a connected ECG line of solid line characters, not bars or dots.
   await has(/claude beat/)
-  await has(/[⠀-⣿]{4,}/)
+  await has(/─{4,}/)
   expect(await ui.find({ type: 'Text', text: /[▁-█]{3,}/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /[⠀-⣿]/ })).toBeUndefined()
   // The official marks (GitHub, Gmail) from a Nerd Font are the default.
   await has(//)
   await has(/\u{f02ab}/u)
