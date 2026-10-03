@@ -47,6 +47,7 @@ import {
   tidySummary,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
+import { isTimeout } from './exe'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
@@ -226,10 +227,14 @@ const exeFound = new Map<string, string>()
 
 async function runExe($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: number) {
   const known = exeFound.get(name)
+  // A program that started and then timed out is rethrown as it is: a slow git must not be retried against every
+  // fallback path. Any other failure is treated as "not there" and looks elsewhere, as it always did, because the
+  // exact wording of "not found" differs between systems.
   if (known) {
     try {
       return await $.process.run([known, ...args], { timeoutMs })
-    } catch {
+    } catch (err) {
+      if (isTimeout(err)) throw err
       exeFound.delete(name)
     }
   }
@@ -239,6 +244,7 @@ async function runExe($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: 
 
     return r
   } catch (err) {
+    if (isTimeout(err)) throw err
     const programFiles = (await $.env.get('OS')) === 'Windows_NT' ? await $.env.get('ProgramFiles') : undefined
     if (!programFiles) throw err
     for (const exe of WINDOWS_INSTALLS[name](programFiles)) {
@@ -247,7 +253,9 @@ async function runExe($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: 
         exeFound.set(name, exe)
 
         return r
-      } catch {}
+      } catch (inner) {
+        if (isTimeout(inner)) throw inner
+      }
     }
     throw err
   }
