@@ -73,13 +73,14 @@ Then, in any session:
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
 - `/dash-handoff on|off` writes (or stops writing) a handoff note each time a session compacts (on by default)
+- `/dash-watch pr <number or URL>` keeps an eye on a pull request and shows it in a **Watching** section at the top of the pane with where it stands (`draft`, `open`, or `ready to merge`: open, not a draft, no merge conflicts, CI neither failing nor running, no review outstanding), its CI (`passing`, `failing`, `running`, `no CI checks`) and whether it is `approved`, `not approved` or has `changes requested`, and marks it when any of that changes or it is merged or closed. `/dash-watch list` shows them, `/dash-watch clear <number|all>` removes them. A bare number means the repository of the session you typed it in
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
 - `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
 
 ### Requirements
 
 - `git` on your `PATH`.
-- For **PRs & CI**, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works.
+- For **PRs & CI** and `/dash-watch`, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works. If `gh` is installed but this session can't find it (an app started before it was installed keeps its old `PATH` until it is restarted), dev-dash tries the standard Windows install folder (`%ProgramFiles%\GitHub CLI\gh.exe`) before giving up.
 - Usage limits appear on Pro and Max plans, after the session's first reply.
 
 ## What dev-dash reads and writes
@@ -91,13 +92,13 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 - `~/.claude/projects/<project>/<session>.jsonl`, only for sessions that have no title, keeping just the AI-generated title or last-prompt lines.
 - `~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl` and `.meta.json`: each subagent's description, type, step count and latest step.
 - `~/.claude/dev-dash/sessions/*.json`: status files written by other sessions running dev-dash.
-- `git` in your working directories, `tasklist` (Windows) or `ps` to see which sessions are still alive, `gh api graphql` for your PRs, and once a minute PowerShell `Get-PSDrive` (Windows) or `df -Pk` for free disk space.
+- `git` in your working directories, `tasklist` (Windows) or `ps` to see which sessions are still alive, `gh api graphql` for your PRs, `gh pr view` for each pull request you asked `/dash-watch` to follow (about once a minute, only while the pane is open, and once when you add one), and once a minute PowerShell `Get-PSDrive` (Windows) or `df -Pk` for free disk space.
 
 **Writes**
 - `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, its one-line summary (only if summaries are on), cost, context use and its per-turn trend, cache hit rate, latest step, a stuck flag, a risky-command flag (the pattern name, not the command), and the files it edited in the last 30 minutes.
 - In that same file, for the Plan, Sources and Files sections: the text of the task in progress in its todo list, the URLs it fetched (scheme, host and path only; credentials, query strings and fragments are dropped before anything is stored) and the searches it ran (cut to 80 characters), and the paths of files it edited this turn with their added and removed line counts. For the test badge: the last test run it started, as a runner label such as `npm test` or `pytest`, whether it passed, and when. Never the command line, its arguments or its output.
 - `~/.claude/dev-dash/handoffs/<time>-<session>.md`, once each time this session's conversation compacts (`/compact` or automatic): a short note with the session's repo, branch and directory, a `claude --resume` line, how far its todo list got, its last step, the files it edited recently, and the summary text the compaction kept (cut to 2000 characters). These files stay on your machine. Only the newest 30 are kept: when a new note is written, dev-dash deletes older files in that folder, only files named like its own notes (a date and time, a short session id and `.md`), one bare file name at a time inside that folder, and nothing else. `/dash-handoff off` stops writing them. Compactions inside subagents are not written.
-- Its own plugin store (only the alerts, band, summaries and handoff on/off choices).
+- Its own plugin store: the alerts, band, summaries and handoff on/off choices, and the `/dash-watch` list (for each watched pull request: `owner/repo`, number, title, its last state in words such as `open · CI passing · approved`, and times; at most 10, dropped 24 hours after they were added or last changed). `/dash-watch clear all` empties it.
 
 **Network:** the `gh` call to GitHub and, only if you turn summaries on, one small model call per finished turn through your own Claude Code session. Nothing else leaves your machine.
 

@@ -17,6 +17,7 @@ import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, Lim
 import { bytes, collisionsOf, isDiskLow } from './monitor'
 import { progressSections } from './progress-view'
 import { testBadge } from './testrun'
+import { watchingSection } from './watch-view'
 
 export const PANE = 'dev-dash'
 
@@ -646,6 +647,17 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       </Box>
     )
 
+    const watching = watchingSection({
+      Box,
+      Text,
+      Heading,
+      folded,
+      watches: s.watches ?? [],
+      W,
+      now,
+      tone: TONE,
+      fmt: { ago, cut },
+    })
     const progress = progressSections({
       Box,
       Text,
@@ -689,6 +701,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     return (
       <Box flexDirection="column" width={W}>
         {header}
+        {watching}
         {attention}
         {sessions}
         {agentsSection}
