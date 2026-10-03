@@ -65,9 +65,9 @@ export type TabId = 'dashboard' | 'entertainment' | 'custom'
 
 /** What the Spotify app on this machine reports; read locally, never stored or sent anywhere. */
 export type NowPlaying = {
-  /** playing: a track is on; idle: the app is open with nothing playing; closed: not running; unavailable: could not be read here. */
-  state: 'playing' | 'idle' | 'closed' | 'unavailable'
-  /** "Artist - Title" while playing, else ''. */
+  /** playing / paused: a track is loaded; idle: the app is open with nothing started; closed: not running; unavailable: could not be read here. */
+  state: 'playing' | 'paused' | 'idle' | 'closed' | 'unavailable'
+  /** "Artist - Title" while playing or paused, else ''. */
   track: string
   at: number
 }
@@ -194,6 +194,8 @@ export type Snapshot = {
   disks: DiskRow[]
   /** Only read while the Entertainment tab is showing; null before the first read. */
   nowPlaying: NowPlaying | null
+  /** Whether the person has turned the Spotify card on (off by default; nothing is read while it is off). */
+  spotifyOn: boolean
   git: GitInfo | null
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */

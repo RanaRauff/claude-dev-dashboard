@@ -80,11 +80,15 @@ test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, 
   await gone(/Stocks/)
   expect(spotifyCalls()).toBe(0)
 
-  // Entertainment: the Dashboard sections go, the cards come, and Spotify is read (and only now).
-  spotify.push('Daft Punk - Around the World\r\n')
+  // Entertainment: the Dashboard sections go, the cards come. Spotify is off until opted in, and nothing is read.
+  spotify.push('Playing|Daft Punk - Around the World\r\n')
   await press('tab-entertainment')
   await press('key-refresh')
   await need(/Now playing/)
+  await need(/Nothing is read until you turn it on/)
+  expect(spotifyCalls()).toBe(0)
+  await press('spotify-toggle')
+  await press('key-refresh')
   await need(/Daft Punk - Around the World/)
   await need(/Stocks/)
   await need(/Not set up/)
@@ -95,11 +99,15 @@ test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, 
   expect(await hasKey('key-help')).toBe(true)
   expect(await hasKey('tab-dashboard')).toBe(true)
 
-  // Nothing playing is said plainly.
-  spotify[0] = 'Spotify Premium'
+  // Paused keeps the track and says so; open with nothing started is said plainly.
+  spotify[0] = 'Paused|Daft Punk - Around the World'
   await new Promise(resolve => setTimeout(resolve, 4100))
   await press('key-refresh')
-  await need(/nothing is playing/)
+  await need(/\(paused\)/)
+  spotify[0] = 'OPEN'
+  await new Promise(resolve => setTimeout(resolve, 4100))
+  await press('key-refresh')
+  await need(/no song has been started/)
 
   // Custom: empty on purpose, and Spotify is not read while it is showing.
   await press('tab-custom')

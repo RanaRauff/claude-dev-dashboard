@@ -25,7 +25,7 @@ Goal: every part of the pane reachable from the keyboard with the keys people al
 
 ### Tabs (Claude): built, waiting on #8
 - [x] Three tabs: Dashboard (everything so far), Entertainment, Custom (empty on purpose).
-- [x] Entertainment: Now playing (Spotify on this machine, read locally) and a Stocks card that says it is not set up.
+- [x] Entertainment: Now playing (Spotify on this machine, read locally, opt-in with `/dash-spotify`) and a Stocks card that says it is not set up.
 - [ ] **Stocks watchlist**: needs prices from the internet, which CONTRIBUTING.md does not allow (only `git` and `gh`). Rahul to decide whether to allow a quote source, and which. (Rahul)
 - [ ] **Custom tab**: decide what goes in it. (Rahul)
 - [ ] More Entertainment widgets once a source policy exists (news headlines, a break timer, ...). (open)

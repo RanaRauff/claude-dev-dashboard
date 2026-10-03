@@ -50,12 +50,12 @@ The pane has three tabs along its top edge. Move onto one with the arrow keys or
 | Tab | Holds |
 | --- | --- |
 | **Dashboard** | Everything described above: Attention, Sessions, Agents, Monitor, Work in flight, PRs & CI, Plan, Sources and Files. |
-| **Entertainment** | Cards for things you keep for fun. Today: **Now playing**, the track the Spotify app on this machine is playing, and a **Stocks** card that says it is not set up (see below). |
+| **Entertainment** | Cards for things you keep for fun. Today: **Now playing**, the track the Spotify app on this machine is playing (opt-in, off by default), and a **Stocks** card that says it is not set up (see below). |
 | **Custom** | Empty on purpose, kept for widgets you choose yourself. |
 
 On Entertainment and Custom the large header is replaced by one line, so a session waiting for you still shows. The `1`–`9` fold keys belong to the Dashboard tab.
 
-**Now playing** is read with a local command and no network: the Spotify window title on Windows, AppleScript on macOS, `playerctl` on Linux. It is read only while the pane is open and the Entertainment tab is showing, every few seconds at most, and the track name is shown but never stored.
+**Now playing** is off until you turn it on, with the **turn on** button on the card or `/dash-spotify on` (`off` or no argument to switch back). Nothing is read while it is off. When on, it uses a local command and no network or login: the Windows media session (the info behind the volume overlay), AppleScript on macOS, `playerctl` on Linux. It shows playing or paused, is read only while the pane is open and the Entertainment tab is showing, every few seconds at most, and the track name is shown but never stored. Only your on/off choice is remembered.
 
 **Stocks** needs prices from the internet, and dev-dash makes no network calls beyond `git` and `gh` (see [CONTRIBUTING.md](CONTRIBUTING.md)), so nothing is fetched. A source has to be approved by the project owner before a watchlist can go there.
 
@@ -130,7 +130,7 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 - `~/.claude/projects/<project>/<session>.jsonl`, only for sessions that have no title, keeping just the AI-generated title or last-prompt lines.
 - `~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl` and `.meta.json`: each subagent's description, type, step count and latest step.
 - `~/.claude/dev-dash/sessions/*.json`: status files written by other sessions running dev-dash.
-- On the Entertainment tab only, while it is showing: what the Spotify app on this machine is playing, from the window title (PowerShell `Get-Process`, Windows), `osascript` (macOS) or `playerctl` (Linux). The track name is shown in the pane and not stored. No network.
+- On the Entertainment tab only, while it is showing: only if you turned Spotify on: what the Spotify app on this machine is playing, from the Windows media session (PowerShell, read-only), `osascript` (macOS) or `playerctl` (Linux). The track name is shown in the pane and not stored. No network.
 - `git` in your working directories, `tasklist` (Windows) or `ps` to see which sessions are still alive, `gh api graphql` for your PRs, `gh pr view`, `gh issue view` or `gh run view` for each GitHub item you asked `/dash-watch` to follow (about once a minute, only while the pane is open, and once when you add one), and once a minute PowerShell `Get-PSDrive` (Windows) or `df -Pk` for free disk space.
 
 **Writes**
