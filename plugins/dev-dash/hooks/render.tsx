@@ -821,7 +821,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         <Text dimColor wrap="truncate-end">{limits.length > 0 ? ` · ${limits.map(l => `${l.kind} ${Math.round(l.pct)}%`).join(' · ')}` : ''}{att.total > 0 ? ' · see the Dashboard tab' : ''}</Text>
       </Box>
     )
-    const tabView = { Box, Text, W, now, tone: TONE, fmt: { ago, cut } }
+    const tabView = { Box, Text, Button, W, now, tone: TONE, fmt: { ago, cut } }
 
     return (
       <Box flexDirection="column" width={W}>
@@ -838,7 +838,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         {tab === 'dashboard' && progress.plan}
         {tab === 'dashboard' && progress.sources}
         {tab === 'dashboard' && progress.files}
-        {tab === 'entertainment' && entertainmentView(tabView, s.nowPlaying ?? null)}
+        {tab === 'entertainment' && entertainmentView(tabView, s.nowPlaying ?? null, s.spotifyOn === true)}
         {tab === 'custom' && customView(tabView)}
         {footer}
       </Box>

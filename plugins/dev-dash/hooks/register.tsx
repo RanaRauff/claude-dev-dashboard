@@ -183,6 +183,7 @@ const ctx = {
   platform: 'linux' as Platform,
   nowPlaying: null as NowPlaying | null,
   nowPlayingAt: 0,
+  spotifyOn: false,
   plan: null as PlanProgress | null,
   planAt: 0,
   sources: [] as SourceRow[],
@@ -734,6 +735,7 @@ async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample
       paneOpen: ctx.isOpen,
       disks: ctx.disks,
       nowPlaying: ctx.nowPlaying,
+      spotifyOn: ctx.spotifyOn,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       watches: ctx.watches,
@@ -884,7 +886,7 @@ async function tickNow($: Engine, withPrs: boolean) {
   if (withPrs) ctx.prs = await readPrs($)
   if (ctx.isOpen) {
     const showing = await read($, tab)
-    if (isTab(showing) && showing === 'entertainment') await readNowPlaying($)
+    if (ctx.spotifyOn && isTab(showing) && showing === 'entertainment') await readNowPlaying($)
   }
   // The list is read from the store inside, so a watch another session added is picked up too.
   if (ctx.isOpen) await pollWatches($, false)
@@ -894,6 +896,21 @@ async function tickNow($: Engine, withPrs: boolean) {
 
 // What `a`, `r` and `q` do. The typed commands and the footer keys run the same code. (A plugin cannot run its
 // own slash commands through $.command.run, which skips the calling plugin's hooks, so the keys call these.)
+// Spotify is opt-in. Off means nothing is read at all: no command runs, and the card says how to turn it on.
+async function setSpotify($: Engine, arg: string) {
+  const a = arg.trim().toLowerCase()
+  ctx.spotifyOn = a === 'on' ? true : a === 'off' ? false : !ctx.spotifyOn
+  await $.store.set('spotifyOn', ctx.spotifyOn).catch(() => undefined)
+  ctx.nowPlaying = null
+  ctx.nowPlayingAt = 0
+  if (ctx.spotifyOn && ctx.isOpen && (await read($, tab)) === 'entertainment') await readNowPlaying($)
+  await publish($, undefined)
+
+  return ctx.spotifyOn
+    ? 'Spotify is on: the Entertainment tab shows what the Spotify app on this machine is playing. Turn it off with /dash-spotify off.'
+    : 'Spotify is off. Nothing is read.'
+}
+
 async function setAlerts($: Engine, arg: string) {
   const a = arg.trim().toLowerCase()
   ctx.alertsOn = a === 'on' ? true : a === 'off' ? false : !ctx.alertsOn
@@ -945,6 +962,9 @@ export const register: Register = on => {
     if (typeof stored === 'boolean') ctx.alertsOn = stored
     const storedBand = await $.store.get('bandOn').catch(() => undefined)
     if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    await $.command.register({ name: 'dash-spotify', description: 'Show what Spotify is playing on the Entertainment tab (on | off, or toggle; off by default)' })
+    const storedSpotify = await $.store.get('spotifyOn').catch(() => undefined)
+    if (typeof storedSpotify === 'boolean') ctx.spotifyOn = storedSpotify
     await $.command.register({ name: 'dash-summaries', description: 'Write a one-line summary per session after each turn (on | off; uses a small model call per turn)' })
     const storedSummaries = await $.store.get('summariesOn').catch(() => undefined)
     if (typeof storedSummaries === 'boolean') ctx.summariesOn = storedSummaries
@@ -1093,6 +1113,11 @@ export const register: Register = on => {
 
     return { element: e.element }
   })
+  on('ui.press', { plugin: 'dev-dash', element: 'spotify-toggle' }, async ($, e) => {
+    await setSpotify($, '')
+
+    return { element: e.element }
+  })
   on('ui.press', { plugin: 'dev-dash', element: 'key-alerts' }, async ($, e) => {
     await setAlerts($, '')
 
@@ -1124,6 +1149,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
+  on('command.run', { command: 'dash-spotify' }, async ($, e) => ({ text: await setSpotify($, e.args ?? '') }))
 
   on('command.run', { command: 'dash-watch' }, async ($, e) => {
     const cmd = parseWatchArgs(e.args ?? '')
