@@ -39,6 +39,9 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | **Monitor** | 4 | Usage limits (5-hour, 7-day) with a forecast of when you'll run out at the current pace, context bars per session with a per-turn sparkline and prompt-cache hit rate, free disk space, and a live event feed. |
 | **Work in flight** | 5 | Current branch, ahead/behind, uncommitted lines (+/−), stashes, recent and merged branches, and worktrees. |
 | **PRs & CI** | 6 | Your open PRs across all your GitHub repos, with CI, review state, age and conflicts, plus the PRs waiting for your review. |
+| **Plan** | 7 | A progress bar per session that keeps a todo list (`TodoWrite`): done of total, and the task in progress. A finished plan stays for 10 minutes. Plugin sessions only. |
+| **Sources** | 8 | URLs and searches sessions fetched (`WebFetch`, `WebSearch`), newest first, with the session that made them. Plugin sessions only. |
+| **Files** | 9 | Files each session edited this turn, with lines added and removed against `HEAD`. Plugin sessions only. |
 
 Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **r** refreshes, **h** hides the pane.
 
@@ -91,6 +94,7 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 
 **Writes**
 - `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, its one-line summary (only if summaries are on), cost, context use and its per-turn trend, cache hit rate, latest step, a stuck flag, a risky-command flag (the pattern name, not the command), and the files it edited in the last 30 minutes.
+- In that same file, for the Plan, Sources and Files sections: the text of the task in progress in its todo list, the URLs it fetched (scheme, host and path only; credentials, query strings and fragments are dropped before anything is stored) and the searches it ran (cut to 80 characters), and the paths of files it edited this turn with their added and removed line counts.
 - Its own plugin store (only the alerts, band and summaries on/off choices).
 
 **Network:** the `gh` call to GitHub and, only if you turn summaries on, one small model call per finished turn through your own Claude Code session. Nothing else leaves your machine.
@@ -121,7 +125,7 @@ claude plugin test ./plugins/dev-dash
 
 Once the plugin has loaded, Claude Code writes its type declarations to `plugins/dev-dash/.claude-plugin/types/` (git-ignored), and `tsc -p plugins/dev-dash` type-checks it.
 
-Ideas and research: [docs/dashboard-ideas.md](docs/dashboard-ideas.md) and [docs/x-thread-mods.md](docs/x-thread-mods.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
+Ideas and research: [docs/dashboard-ideas.md](docs/dashboard-ideas.md), [docs/x-thread-mods.md](docs/x-thread-mods.md) and [what people are building with mods](docs/mods-research.md). See [TODO.md](TODO.md) for what is planned and who has what, and [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
 
 ## License
 
