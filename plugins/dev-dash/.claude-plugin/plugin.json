@@ -1,0 +1,13 @@
+{
+  "name": "dev-dash",
+  "version": "0.1.0",
+  "description": "Developer dashboard pane: attention, sessions, work in flight, PRs and CI",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Rahul Chauhan",
+    "url": "https://github.com/RanaRauff"
+  },
+  "homepage": "https://github.com/RanaRauff/claude-dev-dashboard",
+  "repository": "https://github.com/RanaRauff/claude-dev-dashboard",
+  "license": "MIT"
+}
