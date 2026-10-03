@@ -60,7 +60,7 @@ import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
 import { pushActivity, registerDashPane } from './render'
-import { NAME_OK, parsePack, setBuddy } from './buddy'
+import { NAME_OK, drawScene, getBuddy, getStage, parsePack, setBuddy, toRaster } from './buddy'
 import { THEMES, isTheme, nextTheme, themeByName } from './themes'
 import type { Reading } from './watch'
 import {
@@ -82,6 +82,7 @@ import {
 } from './watch'
 
 const PANE = 'dev-dash'
+const BUDDY_MS = 125
 const TICK_MS = 5000
 const PR_EVERY_TICKS = 12
 const STALE_MS = 90_000
@@ -957,7 +958,7 @@ async function setBeat($: Engine, arg: string) {
 
     return found.length
       ? `Buddies: ${found.join(', ')}. Use /dash-beat buddy <name>, or /dash-beat line for the red line.`
-      : 'No buddies yet. Make one from animated GIFs with tools/make-buddy.py (see the README), then /dash-beat list.'
+      : 'No buddies yet. Make one with tools/make-buddy.py from a .sprite file or animated GIFs (see the README), then /dash-beat list.'
   }
   if (w === 'line' || (w === '' && ctx.beatStyle === 'buddy')) {
     ctx.beatStyle = 'line'
@@ -1104,6 +1105,14 @@ export const register: Register = on => {
     // counter changes: no data is collected.
     $.clock.every(500, async () => {
       if (ctx.isOpen) await update($, blink, v => ((v ?? 0) + 1) % 1_000_000)
+    })
+    // A sprite buddy on the terminal is a Raster: repaint it in place about eight times a second, so it walks and
+    // flies smoothly without redrawing the pane. Nothing runs unless the pane is open and showing one.
+    $.clock.every(BUDDY_MS, async () => {
+      const pack = getBuddy()
+      const at = getStage()
+      if (!ctx.isOpen || ctx.beatStyle !== 'buddy' || pack?.kind !== 'sprite' || !at) return
+      await $.ui.blit({ requestId: PANE, key: 'buddy', cells: toRaster(drawScene(pack, at.mood, Date.now(), at.cols, at.rows)) }).catch(() => undefined)
     })
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1

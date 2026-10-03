@@ -20,7 +20,7 @@ import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './k
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { TABS, isTab } from './entertainment'
-import { frameAt, getBuddy, moodOf } from './buddy'
+import { buddyRuns, drawScene, getBuddy, moodOf, setStage, toRaster } from './buddy'
 import { applyLook, applyTheme, themeByName } from './themes'
 import type { Look, Roles } from './themes'
 import { progressSections } from './progress-view'
@@ -329,9 +329,17 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 4 : 5)
     const tipAt = tipRow(samples, L.sparkCells, isNarrow ? 4 : 5)
     // A buddy (an animated character from a pack) can stand in for the claude beat: /dash-beat buddy <name>.
+    // A sprite pack is drawn at the slot's size and the current time; on the terminal it is one Raster that a timer
+    // repaints in place (smooth motion without redrawing the pane), elsewhere text runs that step with the pane.
     const buddy = s.beatStyle === 'buddy' ? getBuddy() : null
     const buddyMood = moodOf(att.urgent, live)
-    const buddyRows = buddy ? frameAt(buddy, buddyMood, tickN).rows : []
+    const slot = { cols: L.sparkCells, rows: isNarrow ? 4 : 5 }
+    const els = $.ui.resolve(e)
+    const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : undefined
+    const isRaster = buddy?.kind === 'sprite' && Raster !== undefined
+    setStage(isRaster ? { mood: buddyMood, ...slot } : null)
+    const buddyRows = buddy && !isRaster ? buddyRuns(buddy, buddyMood, now, tickN, slot.cols, slot.rows) : []
+    const buddyHeight = buddy?.kind === 'cells' ? buddy.rows : slot.rows
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -370,8 +378,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             <Text dimColor wrap="truncate-end">{buddy ? `${buddyMood} · ` : ''}synced {ago(now - s.updatedAt)} ago</Text>
           </Box>
           <Box flexDirection="column">
-            {buddy &&
-              Array.from({ length: buddy.rows }, (_, i) => (
+            {buddy && isRaster && Raster && buddy.kind === 'sprite' && (
+              <Raster key="buddy" columns={slot.cols} rows={slot.rows} cells={toRaster(drawScene(buddy, buddyMood, now, slot.cols, slot.rows))} />
+            )}
+            {buddy && !isRaster &&
+              Array.from({ length: buddyHeight }, (_, i) => (
                 <Text>
                   {(buddyRows[i] ?? []).map(([t, fg, bg]) => (
                     <Text color={fg ?? undefined} backgroundColor={bg ?? undefined}>{t}</Text>
