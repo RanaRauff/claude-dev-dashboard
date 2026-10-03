@@ -114,6 +114,7 @@ Then, in any session:
 - `/dash-watch list` shows what is watched, `/dash-watch clear <number|all>` removes them. A bare number means the repository of the session you typed it in
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
 - `/dash-refresh` (or the **refresh** button) refreshes everything now, PRs included
+- `/dash-recap` prints a short text recap of today into the transcript: the sessions dev-dash saw today with their cost, the commits you made today in those working folders, and the pull requests you merged today. It writes nothing.
 
 ### Requirements
 
@@ -131,6 +132,7 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 - `~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl` and `.meta.json`: each subagent's description, type, step count and latest step.
 - `~/.claude/dev-dash/sessions/*.json`: status files written by other sessions running dev-dash.
 - On the Entertainment tab only, while it is showing: what the Spotify app on this machine is playing, from the window title (PowerShell `Get-Process`, Windows), `osascript` (macOS) or `playerctl` (Linux). The track name is shown in the pane and not stored. No network.
+- `/dash-recap` only, when you run it: today's files in `~/.claude/dev-dash/sessions/` (name, folder, branch, cost, start time), `git rev-parse`, `git config user.email` and `git log --since=<today> --author=<that email> --no-merges` in this session's folder and the folders other sessions worked in today (at most 6 repositories, each once; commit hashes and subjects are printed, not stored), and one `gh search prs --author @me --merged-at` call. No transcripts, no other network.
 - `git` in your working directories, `tasklist` (Windows) or `ps` to see which sessions are still alive, `gh api graphql` for your PRs, `gh pr view`, `gh issue view` or `gh run view` for each GitHub item you asked `/dash-watch` to follow (about once a minute, only while the pane is open, and once when you add one), and once a minute PowerShell `Get-PSDrive` (Windows) or `df -Pk` for free disk space.
 
 **Writes**

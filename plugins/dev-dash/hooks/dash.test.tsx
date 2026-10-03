@@ -496,3 +496,38 @@ test('draws each watch as an outlined box with the GitHub icon and status marks;
   if (!(await seen(ascii, /GH/))) throw new Error('no ascii GH after /dash-icons ascii')
   await ascii.unmount()
 })
+
+test('/dash-recap prints today from the heartbeat files, git and gh', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  const failed = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  const beat = JSON.stringify({ id: 'w1', name: 'Docs fixer', cwd: '/w/api', branch: 'feat/docs', state: 'running', startedAt: now - 60_000, updatedAt: now, costUsd: 0.75 })
+  const seen: string[] = []
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.usage', async () => ({ value: { startedAt: now, context: { window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('store.get', async () => ({ value: undefined }))
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.list', async (_$, e) => ({ value: e.path.replace(/\\/g, '/').endsWith('/dev-dash/sessions') ? [{ kind: 'file', name: 'w1.json', mtimeMs: now }] : [] }))
+  on('fs.read', async () => ({ value: beat }))
+  on('process.run', async (_$, e) => {
+    const [cmd, ...args] = e.argv
+    seen.push([cmd, ...args].join(' '))
+    if (cmd === 'git' && args.includes('rev-parse')) return ok('/code/web\n')
+    if (cmd === 'git' && args.includes('config')) return ok('me@x.io\n')
+    if (cmd === 'git' && args.includes('log')) return ok('abc1234\tFix the redirect\n')
+    if (cmd === 'gh') return ok(JSON.stringify([{ number: 7, title: 'Add recap', repository: { nameWithOwner: 'o/web' } }]))
+    return failed
+  })
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  const out = JSON.stringify(await $.command.run({ command: 'dash-recap', args: '' }))
+  for (const re of [/Recap for/, /Docs fixer \(feat\/docs\)/, /\$0\.75/, /web abc1234 Fix the redirect/, /o\/web#7 Add recap/]) {
+    if (!re.test(out)) throw new Error(`recap has no text matching ${re}: ${out}`)
+  }
+  expect(seen.some(s => s.startsWith('gh search prs') && s.includes('@me'))).toBe(true)
+})

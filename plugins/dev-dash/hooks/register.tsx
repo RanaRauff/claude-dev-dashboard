@@ -54,6 +54,7 @@ import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { isTab, nowPlayingCommand, parseNowPlaying, unavailable } from './entertainment'
 import type { Platform } from './entertainment'
 import { isMuted } from './keys'
+import { recapNow } from './recap-run'
 import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
@@ -956,6 +957,7 @@ export const register: Register = on => {
     if (typeof storedHandoff === 'boolean') ctx.handoffOn = storedHandoff
     await $.command.register({ name: 'dash-watch', description: 'Keep an eye on a pull request: pr <number or URL> | list | clear <number|all>' })
     ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, Date.now()))
+    await $.command.register({ name: 'dash-recap', description: 'Print a short recap of today: sessions and cost, your commits, PRs you merged' })
     await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
     if (ctx.isWindows) ctx.platform = 'windows'
@@ -1084,6 +1086,33 @@ export const register: Register = on => {
       }
     }
   })
+
+  on('command.run', { command: 'dash-recap' }, async $ => ({
+    text: await recapNow({
+      dir: ctx.dir,
+      cwd: me.cwd,
+      fs: { list: dir => $.fs.list(dir), read: path => $.fs.read(path) },
+      git: async args => {
+        try {
+          const r = await runExe($, 'git', args, 10_000)
+
+          return r.exitCode === 0 ? r.stdout : null
+        } catch {
+          return null
+        }
+      },
+      gh: async args => {
+        try {
+          const r = await runGh($, args, 20_000)
+
+          return r.exitCode === 0 ? r.stdout : null
+        } catch {
+          return null
+        }
+      },
+      now: Date.now(),
+    }),
+  }))
 
   on('command.run', { command: 'dash-refresh' }, async $ => ({ text: await refreshNow($) }))
 
