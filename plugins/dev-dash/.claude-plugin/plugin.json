@@ -1,6 +1,6 @@
 {
   "name": "dev-dash",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Developer dashboard pane: what needs you, every Claude session and subagent, usage limits, git and PRs",
   "types": "./types/index.d.ts",
   "author": {
