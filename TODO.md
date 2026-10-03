@@ -42,7 +42,7 @@ Mocks: https://claude.ai/artifact/JYNHbTvB7nbN8Qx8TgTai3 (private link; the same
 - [ ] **Rule-based advisor**: a few fixed rules, no model calls (cache about to expire, context past 80%, the same command failing). (Claude)
 - [ ] **Get discovered**: open a PR to be listed in karanb192/awesome-claude-code-mods (the repo already has the `claude-code-mod` topic). (Claude)
 - [ ] **Check the desktop app**: run dev-dash there and fix what looks off. (Claude)
-- [ ] **Handoff on /compact**: write a short handoff note whenever a session compacts. (open)
+- [x] **Handoff on /compact**: write a short handoff note whenever a session compacts. (Connor, PR open)
 - [ ] **Agent drill-down**: click an agent to read its conversation, with a Stop button. (open, large)
 - [ ] **Session recap card**: a shareable summary of the day across sessions. (open)
 - [ ] **Optional mascot** whose mood follows overall status, off by default. (open)
