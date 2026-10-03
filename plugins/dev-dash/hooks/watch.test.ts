@@ -58,7 +58,29 @@ describe('reading a pull request', () => {
 
   test('an open PR is a comparable value plus words: a review still outstanding is not ready', () => {
     const r = readPr({ state: 'OPEN', title: ' Keyboard nav ', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: PASS })
-    expect(r).toEqual({ value: 'OPEN|passing|review required|open|', detail: 'open · CI passing · not approved', title: 'Keyboard nav', done: false })
+    expect(r?.value).toBe('OPEN|passing|review required|open|')
+    expect(r?.detail).toBe('open · CI passing · not approved')
+    expect(r?.title).toBe('Keyboard nav')
+    expect(r?.done).toBe(false)
+  })
+
+  test('the marks: stage, CI and approval as an icon and a word, and a colour for the whole box', () => {
+    const marks = (j: Record<string, unknown>) => readPr(j)?.chips.map(c => `${c.icon} ${c.text}`)
+    expect(marks({ state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: PASS })).toEqual(['○ open', '● CI', '○ no approval'])
+    expect(marks({ state: 'OPEN', mergeable: 'MERGEABLE', reviewDecision: 'APPROVED', statusCheckRollup: PASS })).toEqual(['✔ ready', '● CI', '✔ approved'])
+    expect(marks({ state: 'OPEN', isDraft: true, reviewDecision: 'APPROVED', statusCheckRollup: PASS })).toEqual(['✎ draft', '● CI', '✔ approved'])
+    expect(marks({ state: 'OPEN', mergeable: 'CONFLICTING', reviewDecision: 'APPROVED', statusCheckRollup: PASS })).toEqual(['○ open', '⚠ conflicts', '● CI', '✔ approved'])
+    expect(marks({ state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED', statusCheckRollup: [{ state: 'FAILURE' }] })).toEqual(['○ open', '✗ CI', '± changes'])
+    expect(marks({ state: 'OPEN', statusCheckRollup: [{ status: 'IN_PROGRESS' }] })).toEqual(['○ open', '◐ CI', '○ no approval'])
+    expect(marks({ state: 'OPEN', statusCheckRollup: [] })).toEqual(['✔ ready', '· no CI', '○ no approval'])
+    expect(marks({ state: 'MERGED' })).toEqual(['⑂ merged'])
+    expect(marks({ state: 'CLOSED' })).toEqual(['✗ closed'])
+    const tone = (j: Record<string, unknown>) => readPr(j)?.tone
+    expect(tone({ state: 'OPEN', mergeable: 'MERGEABLE', reviewDecision: 'APPROVED', statusCheckRollup: PASS })).toBe('ok')
+    expect(tone({ state: 'OPEN', isDraft: true, statusCheckRollup: PASS })).toBe('mute')
+    expect(tone({ state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: PASS })).toBe('warn')
+    expect(tone({ state: 'OPEN', statusCheckRollup: [{ state: 'FAILURE' }] })).toBe('bad')
+    expect(tone({ state: 'MERGED' })).toBe('info')
   })
 
   test('approved, not a draft, CI passing and no conflicts is ready to merge', () => {
@@ -123,7 +145,16 @@ describe('reading a pull request', () => {
 })
 
 describe('a watch over time', () => {
-  const look = (value: string, title = 'T') => ({ value, detail: value, title, done: value.startsWith('MERGED') })
+  const look = (value: string, title = 'T') => ({ value, detail: value, title, done: value.startsWith('MERGED'), chips: [{ icon: '○', text: value, tone: 'info' as const }], tone: 'info' as const })
+
+  test('each look replaces the marks and the colour with what it found', () => {
+    const w = stepWatch(newWatch({ kind: 'pr', repo: 'o/r', number: 6 }, NOW), look('OPEN|pending|none'), NOW)
+    expect(w.chips).toEqual([{ icon: '○', text: 'OPEN|pending|none', tone: 'info' }])
+    expect(w.tone).toBe('info')
+    const next = stepWatch(w, { ...look('OPEN|failing|none'), chips: [{ icon: '✗', text: 'CI', tone: 'bad' as const }], tone: 'bad' as const }, NOW + 60_000)
+    expect(next.chips).toEqual([{ icon: '✗', text: 'CI', tone: 'bad' }])
+    expect(next.tone).toBe('bad')
+  })
 
   test('the first look is a baseline and does not fire', () => {
     const w = stepWatch(newWatch(ref(6), NOW), look('OPEN|pending|none'), NOW + 1000)
@@ -259,6 +290,16 @@ describe('issues', () => {
     expect(readIssue(null)).toBeNull()
   })
 
+  test('the marks: state, comments, who it is assigned to, labels', () => {
+    const marks = (j: Record<string, unknown>) => readIssue(j)?.chips.map(c => `${c.icon} ${c.text}`)
+    expect(marks({ state: 'OPEN', comments: [{}, {}], labels: [{ name: 'ui' }, { name: 'bug' }], assignees: [{ login: 'ana' }] })).toEqual(['○ open', '💬 2', '👤 ana', '🏷 bug, ui'])
+    expect(marks({ state: 'OPEN' })).toEqual(['○ open', '💬 0', '👤 unassigned'])
+    expect(marks({ state: 'OPEN', assignees: [{ login: 'a' }, { login: 'b' }, { login: 'c' }], labels: [{ name: 'x' }, { name: 'y' }, { name: 'z' }] })).toEqual(['○ open', '💬 0', '👤 a +2', '🏷 x, y +1'])
+    expect(marks({ state: 'CLOSED', stateReason: 'NOT_PLANNED', comments: [{}] })).toEqual(['✓ not planned', '💬 1'])
+    expect(readIssue({ state: 'OPEN' })?.tone).toBe('info')
+    expect(readIssue({ state: 'CLOSED' })?.tone).toBe('mute')
+  })
+
   test('says what changed', () => {
     expect(describeIssueChange('OPEN|2|bug|ana', 'OPEN|3|bug|ana')).toBe('new comment')
     expect(describeIssueChange('OPEN|2|bug|ana', 'OPEN|4|bug|ana')).toBe('2 new comments')
@@ -289,6 +330,16 @@ describe('Actions runs', () => {
     expect(run('completed', 'success')?.title).toBe('CI · main')
   })
 
+  test('the marks and the colour of the box', () => {
+    const run = (status: string, conclusion = '') => readRun({ status, conclusion, workflowName: 'CI', headBranch: 'main' })
+    expect(run('queued')?.chips.map(c => `${c.icon} ${c.text}`)).toEqual(['◌ queued'])
+    expect(run('in_progress')?.chips.map(c => `${c.icon} ${c.text}`)).toEqual(['◐ running'])
+    expect(run('completed', 'success')?.chips.map(c => `${c.icon} ${c.text}`)).toEqual(['✔ passed'])
+    expect(run('completed', 'failure')?.chips.map(c => `${c.icon} ${c.text}`)).toEqual(['✗ failed'])
+    expect(run('completed', 'cancelled')?.chips.map(c => `${c.icon} ${c.text}`)).toEqual(['■ cancelled'])
+    expect([run('in_progress')?.tone, run('completed', 'success')?.tone, run('completed', 'failure')?.tone, run('queued')?.tone]).toEqual(['warn', 'ok', 'bad', 'mute'])
+  })
+
   test('not a run, and what changed', () => {
     expect(readRun({})).toBeNull()
     expect(readRun(null)).toBeNull()
@@ -305,7 +356,7 @@ describe('one list for every kind', () => {
   })
 
   test('a watch of each kind fires on its own kind of change', () => {
-    const look = (value: string, detail: string) => ({ value, detail, title: 'T', done: false })
+    const look = (value: string, detail: string) => ({ value, detail, title: 'T', done: false, chips: [], tone: 'info' as const })
     const issue = stepWatch(stepWatch(newWatch({ kind: 'issue', repo: 'o/r', number: 4 }, NOW), look('OPEN|1||', 'open'), NOW), look('OPEN|2||', 'open'), NOW + 60_000)
     expect(issue.fired).toBe('new comment')
     const run = stepWatch(stepWatch(newWatch({ kind: 'run', repo: 'o/r', number: 99 }, NOW), look('in_progress|', 'running'), NOW), look('completed|failure', 'failed'), NOW + 60_000)

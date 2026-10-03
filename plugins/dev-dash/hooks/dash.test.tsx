@@ -428,3 +428,67 @@ test('summaries: off by default, on writes a one-line label after a finished tur
   await $.command.run({ command: 'dash-summaries', args: 'off' })
   expect(JSON.parse(files.get('/cfg/dev-dash/sessions/self.json') ?? '{}').summary).toBe('')
 })
+
+test('draws each watch as an outlined box with the GitHub icon and status marks; /dash-icons switches the icon', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const base = { addedAt: now - 60_000, expiresAt: now + 3_600_000, changedAt: now - 30_000, done: false, value: 'x', checkedAt: now - 20_000, firedAt: 0, fired: '', title: '' }
+  const watches = [
+    { ...base, id: 'pr:o/r#11', kind: 'pr', repo: 'o/r', number: 11, title: 'Test badge on each session row', detail: 'ready to merge', tone: 'ok', firedAt: now - 5_000, fired: 'ready to merge', chips: [{ icon: '✔', text: 'ready', tone: 'ok' }, { icon: '●', text: 'CI', tone: 'ok' }, { icon: '✔', text: 'approved', tone: 'ok' }] },
+    { ...base, id: 'issue:o/r#4', kind: 'issue', repo: 'o/r', number: 4, title: 'Crash on start', detail: 'open', tone: 'info', chips: [{ icon: '○', text: 'open', tone: 'ok' }, { icon: '💬', text: '2', tone: 'info' }] },
+    { ...base, id: 'run:o/r#99', kind: 'run', repo: 'o/r', number: 99, title: 'CI · main', detail: 'failed', tone: 'bad', chips: [{ icon: '✗', text: 'failed', tone: 'bad' }] },
+    // Saved before the boxes existed: no marks yet, so it says it is waiting rather than drawing nothing.
+    { id: 'pr:o/r#2', kind: 'pr', repo: 'o/r', number: 2, title: 'Old row', addedAt: now, expiresAt: now + 3_600_000, value: '', detail: '', checkedAt: 0, changedAt: 0, firedAt: 0, fired: '', done: false },
+  ]
+  const store = new Map<string, unknown>([['watches', watches]])
+  const none = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now - 60_000, context: { window: 200_000, percent: 10 }, rateLimits: [], cost: { usd: 0.1 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('ui.close', async () => ({ value: undefined }))
+  on('store.get', async (_$, e) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('process.run', async () => none)
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.list', async () => ({ value: [] }))
+  on('fs.stat', async () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.read', async () => ({ value: '' }))
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'dash', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+
+  const seen = async (ui: { find: (q: { type: string; text: RegExp }) => Promise<unknown> }, re: RegExp) => !!(await ui.find({ type: 'Text', text: re }))
+  const ui = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  for (const re of [/Watching \(4 · 1 fired\)/, /PR #11/, /Issue #4/, /Run #99/, /Test badge on each session row/, /Crash on start/, /✔ ready/, /💬 2/, /✗ failed/, /waiting for the first look/, /◆ ready to merge/]) {
+    if (!(await seen(ui, re))) throw new Error(`no text matching ${re}`)
+  }
+  // The default is the emoji icon, which every font has; the official mark is opt-in.
+  if (!(await seen(ui, /🐙/))) throw new Error('no GitHub emoji by default')
+  expect(await seen(ui, /\uf09b/)).toBe(false)
+  await ui.unmount()
+
+  // /dash-icons lists the styles, refuses one it does not know, and changes and remembers a good one.
+  expect(JSON.stringify(await $.command.run({ command: 'dash-icons', args: '' }))).toContain('emoji | nerd | ascii')
+  await $.command.run({ command: 'dash-icons', args: 'fancy' })
+  expect(store.has('iconStyle')).toBe(false)
+  await $.command.run({ command: 'dash-icons', args: 'nerd' })
+  expect(store.get('iconStyle')).toBe('nerd')
+  const nerd = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  if (!(await seen(nerd, /\uf09b/))) throw new Error('no Nerd Font GitHub mark after /dash-icons nerd')
+  expect(await seen(nerd, /🐙/)).toBe(false)
+  await nerd.unmount()
+  await $.command.run({ command: 'dash-icons', args: 'ascii' })
+  const ascii = await $.ui.mount({ plugin: 'dev-dash', surface: 'terminal', ...PANE })
+  if (!(await seen(ascii, /GH/))) throw new Error('no ascii GH after /dash-icons ascii')
+  await ascii.unmount()
+})

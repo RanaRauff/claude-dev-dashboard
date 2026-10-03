@@ -5,7 +5,7 @@
 // A watch is something the person typed. It is polled with `gh` only while the pane is open (and once when
 // it is added, to take a baseline), no faster than every 60 seconds, and never toasts.
 
-import type { CiState, WatchKind, WatchRow } from '../types'
+import type { CiState, WatchChip, WatchKind, WatchRow, WatchTone } from '../types'
 
 export const WATCHES_KEPT = 10
 export const WATCH_EXPIRY_MS = 24 * 3_600_000
@@ -13,8 +13,10 @@ export const WATCH_EVERY_MS = 60_000
 
 export type PrRef = { repo: string; number: number }
 
-/** What one look at a PR found: a comparable `value`, words for the person, and whether it is over. */
-export type Reading = { value: string; detail: string; title: string; done: boolean }
+/** What one look found: a comparable `value`, words for the person, the marks to draw, and whether it is over. */
+export type Reading = { value: string; detail: string; title: string; done: boolean; chips: WatchChip[]; tone: WatchTone }
+
+const chip = (icon: string, text: string, tone: WatchTone): WatchChip => ({ icon, text, tone })
 
 /** What is being watched: a pull request, an issue or an Actions run. `repo` is '' until the caller fills it in. */
 export type WatchSpec = { kind: WatchKind; repo: string; number: number }
@@ -62,10 +64,21 @@ export const PR_FIELDS = 'state,title,isDraft,mergeable,reviewDecision,statusChe
 const reviewWords = (review: string) => (review === 'approved' || review === 'changes requested' ? review : 'not approved')
 
 const CI_WORDS: Record<CiState, string> = { passing: 'CI passing', failing: 'CI failing', pending: 'CI running', none: 'no CI checks' }
+const CI_CHIP: Record<CiState, WatchChip> = {
+  passing: chip('●', 'CI', 'ok'),
+  failing: chip('✗', 'CI', 'bad'),
+  pending: chip('◐', 'CI', 'warn'),
+  none: chip('·', 'no CI', 'mute'),
+}
 
 /** Where an open PR stands: still a draft, nothing in the way of merging it, or something is. */
 export type Stage = 'draft' | 'ready' | 'open'
 const STAGE_WORDS: Record<Stage, string> = { draft: 'draft', ready: 'ready to merge', open: 'open' }
+const STAGE_CHIP: Record<Stage, WatchChip> = {
+  draft: chip('✎', 'draft', 'mute'),
+  ready: chip('✔', 'ready', 'ok'),
+  open: chip('○', 'open', 'info'),
+}
 
 /**
  * One `gh pr view --json state,title,isDraft,mergeable,reviewDecision,statusCheckRollup` answer, or null if it is not one.
@@ -84,13 +97,18 @@ export function readPr(json: unknown): Reading | null {
   const stage: Stage = j.isDraft === true ? 'draft' : isBlocked ? 'open' : 'ready'
   const detail =
     state === 'OPEN' ? [STAGE_WORDS[stage], hasConflicts ? 'merge conflicts' : '', CI_WORDS[ci], reviewWords(review)].filter(Boolean).join(' · ') : state.toLowerCase()
+  const value = `${state}|${ci}|${review}|${stage}|${hasConflicts ? 'conflict' : ''}`
+  const title = String(j.title ?? '').trim()
+  if (state !== 'OPEN') {
+    const merged = state === 'MERGED'
 
-  return {
-    value: `${state}|${ci}|${review}|${stage}|${hasConflicts ? 'conflict' : ''}`,
-    detail,
-    title: String(j.title ?? '').trim(),
-    done: state !== 'OPEN',
+    return { value, detail, title, done: true, chips: [chip(merged ? '⑂' : '✗', detail, merged ? 'info' : 'mute')], tone: merged ? 'info' : 'mute' }
   }
+  const approval = review === 'approved' ? chip('✔', 'approved', 'ok') : review === 'changes requested' ? chip('±', 'changes', 'bad') : chip('○', 'no approval', 'mute')
+  const chips = [STAGE_CHIP[stage], ...(hasConflicts ? [chip('⚠', 'conflicts', 'bad')] : []), CI_CHIP[ci], approval]
+  const tone: WatchTone = ci === 'failing' || hasConflicts || review === 'changes requested' ? 'bad' : stage === 'ready' ? 'ok' : stage === 'draft' ? 'mute' : 'warn'
+
+  return { value, detail, title, done: false, chips, tone }
 }
 
 /** What changed between two values, in words: `CI failing, approved, ready to merge`, `merged`. */
@@ -136,7 +154,16 @@ export function readIssue(json: unknown): Reading | null {
   const closedWord = String(j.stateReason ?? '').toUpperCase() === 'NOT_PLANNED' ? 'not planned' : 'closed'
   const detail = isOpen ? ['open', plural(comments, 'comment'), assignees.length ? `assigned to ${assignees.join(', ')}` : 'unassigned'].join(' · ') : closedWord
 
-  return { value: `${state}|${comments}|${labels.join(',')}|${assignees.join(',')}`, detail, title: String(j.title ?? '').trim(), done: !isOpen }
+  const chips = isOpen
+    ? [
+        chip('○', 'open', 'ok'),
+        chip('💬', String(comments), comments ? 'info' : 'mute'),
+        chip('👤', assignees.length ? assignees[0] + (assignees.length > 1 ? ` +${assignees.length - 1}` : '') : 'unassigned', assignees.length ? 'info' : 'mute'),
+        ...(labels.length ? [chip('🏷', labels.slice(0, 2).join(', ') + (labels.length > 2 ? ` +${labels.length - 2}` : ''), 'mute')] : []),
+      ]
+    : [chip('✓', closedWord, 'mute'), chip('💬', String(comments), 'mute')]
+
+  return { value: `${state}|${comments}|${labels.join(',')}|${assignees.join(',')}`, detail, title: String(j.title ?? '').trim(), done: !isOpen, chips, tone: isOpen ? 'info' : 'mute' }
 }
 
 /** What changed between two issue values, in words: `2 new comments`, `assigned`, `closed`. */
@@ -179,7 +206,16 @@ export function readRun(json: unknown): Reading | null {
           ? 'skipped'
           : 'failed'
 
-  return { value: `${status}|${conclusion}`, detail, title, done: isDone }
+  const look: Record<string, { c: WatchChip; tone: WatchTone }> = {
+    queued: { c: chip('◌', 'queued', 'mute'), tone: 'mute' },
+    running: { c: chip('◐', 'running', 'warn'), tone: 'warn' },
+    passed: { c: chip('✔', 'passed', 'ok'), tone: 'ok' },
+    failed: { c: chip('✗', 'failed', 'bad'), tone: 'bad' },
+    cancelled: { c: chip('■', 'cancelled', 'mute'), tone: 'mute' },
+    skipped: { c: chip('·', 'skipped', 'mute'), tone: 'mute' },
+  }
+
+  return { value: `${status}|${conclusion}`, detail, title, done: isDone, chips: [look[detail].c], tone: look[detail].tone }
 }
 
 export function describeRunChange(_prev: string, next: string): string {
@@ -219,7 +255,7 @@ export const newWatch = (spec: WatchSpec, now: number): WatchRow => ({
 
 /** The watch after one look. The first look only takes a baseline; a later, different value fires it. */
 export function stepWatch(w: WatchRow, r: Reading, now: number): WatchRow {
-  const base = { ...w, checkedAt: now, detail: r.detail, title: r.title || w.title, done: r.done }
+  const base = { ...w, checkedAt: now, detail: r.detail, title: r.title || w.title, done: r.done, chips: r.chips, tone: r.tone }
   if (w.value === '') return { ...base, value: r.value, changedAt: now }
   if (r.value === w.value) return base
 
