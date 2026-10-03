@@ -9,7 +9,7 @@ const PANE = {
   props: { title: 'Dev dashboard', isFocused: true, bodyColumns: 78, placement: 'dock' },
 } as const
 
-test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, Custom is empty', { timeoutMs: 20_000 }, async ($, on) => {
+test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, Custom is empty', { timeoutMs: 60_000 }, async ($, on) => {
   const now = Date.now()
   const files = new Map<string, string>([
     ['/cfg/sessions/100.json', JSON.stringify({ pid: 100, sessionId: 'self', cwd: '/w/web', startedAt: now - 60_000, name: 'web work', entrypoint: 'cli', status: 'busy' })],
@@ -101,11 +101,11 @@ test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, 
 
   // Paused keeps the track and says so; open with nothing started is said plainly.
   spotify[0] = 'Paused|Daft Punk - Around the World'
-  await new Promise(resolve => setTimeout(resolve, 4100))
+  await new Promise(resolve => setTimeout(resolve, 10_100))
   await press('key-refresh')
   await need(/\(paused\)/)
   spotify[0] = 'OPEN'
-  await new Promise(resolve => setTimeout(resolve, 4100))
+  await new Promise(resolve => setTimeout(resolve, 10_100))
   await press('key-refresh')
   await need(/no song has been started/)
 
@@ -115,7 +115,7 @@ test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, 
   await gone(/Now playing/)
   await gone(/Sessions \(/)
   const before = spotifyCalls()
-  await new Promise(resolve => setTimeout(resolve, 4100))
+  await new Promise(resolve => setTimeout(resolve, 10_100))
   await press('key-refresh')
   expect(spotifyCalls()).toBe(before)
 
@@ -125,5 +125,54 @@ test('tabs: Dashboard keeps everything, Entertainment shows Spotify and Stocks, 
   await need(/Monitor/)
   await gone(/Nothing here yet/)
 
+  await ui.unmount()
+})
+
+
+test('Spotify: a slow read still shows its track when it is back, and reads are at least 10 s apart', { timeoutMs: 40_000 }, async ($, on) => {
+  const now = Date.now()
+  const fail = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  let spotifyCalls = 0
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now, context: { window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : e.name === 'OS' ? 'Windows_NT' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('store.get', async (_$, e) => ({ value: e.key === 'spotifyOn' ? true : undefined }))
+  on('store.set', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('ui.close', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('process.run', async (_$, e) => {
+    if (e.argv[0] === 'powershell' && /Spotify/.test(e.argv.join(' '))) {
+      spotifyCalls += 1
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      return { value: { exitCode: 0, stdout: 'Playing|Daft Punk - Around the World', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return fail
+  })
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.list', async () => ({ value: [] }))
+  on('fs.stat', async () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.read', async () => ({ value: '' }))
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'dash', args: '' })
+  const ui = await $.ui.mount(PANE as never)
+  await ui.press({ key: 'tab-entertainment' })
+  await $.command.run({ command: 'dash-refresh', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 2000))
+
+  expect(spotifyCalls).toBe(1)
+  expect(!!(await ui.find({ type: 'Text', text: /Daft Punk - Around the World/ }))).toBe(true)
+  // Refreshing 5 s later does not start another read: the minimum is 10 s, not 4.
+  await new Promise(resolve => setTimeout(resolve, 5000))
+  await $.command.run({ command: 'dash-refresh', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 200))
+  expect(spotifyCalls).toBe(1)
   await ui.unmount()
 })
