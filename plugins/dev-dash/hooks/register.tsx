@@ -976,7 +976,10 @@ export const register: Register = on => {
     await publish($, undefined)
     const w = ctx.watches.find(x => x.id === added.added?.id)
 
-    return { text: `Watching ${ref.repo}#${ref.number}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.` }
+    // No reading yet means gh could not answer: not on PATH for this process, not logged in, or no such PR.
+    const unread = w?.detail ? '' : ' I could not read it just now: check that `gh` is installed, on your PATH and logged in (`gh auth status`), and that the pull request exists. It will keep trying while the pane is open.'
+
+    return { text: `Watching ${ref.repo}#${ref.number}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
   })
 
   on('command.run', { command: 'dash-handoff' }, async ($, e) => {
