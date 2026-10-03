@@ -15,6 +15,7 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
+import { claudeBeat, effortOf } from './beat'
 import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './keys'
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
@@ -88,8 +89,22 @@ export const sparkline = (values: readonly number[], width: number) => {
 }
 
 /** One activity sample per tick: sessions that are running or waiting. Keeps the last `keep`. */
-export const pushActivity = (history: readonly number[] | undefined, sessions: readonly SessionRow[], keep = 48) =>
-  [...(history ?? []), sessions.filter(r => r.state === 'running' || r.state === 'waiting').length].slice(-keep)
+export const pushActivity = (
+  history: readonly number[] | undefined,
+  sessions: readonly SessionRow[],
+  agents: readonly AgentRow[] = [],
+  toolCalls = 0,
+  keep = 48,
+) =>
+  [
+    ...(history ?? []),
+    effortOf(
+      sessions.filter(r => r.state === 'running').length,
+      sessions.filter(r => r.state === 'waiting').length,
+      agents.filter(a => a.state === 'working').length,
+      toolCalls,
+    ),
+  ].slice(-keep)
 
 export const ctxTone = (pct: number) => (pct >= 80 ? TONE.bad : pct >= 60 ? TONE.warn : TONE.ok)
 
@@ -275,7 +290,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const agents = s.agents ?? []
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
-    const spark = sparkline(samples, L.sparkCells)
+    // "claude beat": a line graph of how much effort Claude put in at each sync, flat along the bottom when idle.
+    const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 4 : 5)
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -298,9 +314,16 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             ))}
           </Box>
         )}
-        <Box flexDirection="row">
-          {spark && <Text color={TONE.info}>{spark} </Text>}
-          <Text dimColor wrap="truncate-end">{spark ? 'activity · ' : ''}synced {ago(now - s.updatedAt)} ago</Text>
+        <Box flexDirection="row" columnGap={1}>
+          <Box flexDirection="column">
+            <Text bold color="red">♥ claude beat</Text>
+            <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
+          </Box>
+          <Box flexDirection="column">
+            {beat.map(row => (
+              <Text bold color="red">{row}</Text>
+            ))}
+          </Box>
         </Box>
       </Box>
     )

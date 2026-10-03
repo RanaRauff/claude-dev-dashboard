@@ -164,6 +164,8 @@ const ctx = {
   isFirstLook: true,
   events: [] as EventRow[],
   limitSamples: new Map<string, Sample[]>(),
+  /** Tool calls this session made since the last claude beat sample. */
+  toolCalls: 0,
   limits: [] as LimitRow[],
   lastContextPct: null as number | null,
   calls: [] as CallMark[],
@@ -704,7 +706,11 @@ async function logError($: Engine, where: string, err: unknown) {
 async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
   const sessions = await readSessions($)
   const agents = await readAgents($, sessions)
-  if (sample) await update($, activity, h => pushActivity(h, sessions))
+  if (sample) {
+    const calls = ctx.toolCalls
+    ctx.toolCalls = 0
+    await update($, activity, h => pushActivity(h, sessions, agents, calls))
+  }
   const now = Date.now()
   const mine = ctx.prs && !ctx.prs.error ? ctx.prs.mine : null
   const muting = { snoozed: (await read($, snoozed)) ?? {}, dismissed: (await read($, dismissed)) ?? [], now }
@@ -1029,6 +1035,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
+    ctx.toolCalls += 1
     const input = e as unknown as Record<string, unknown>
     me.lastTool = stepLabel(e.tool, input)
     if (e.tool === 'AskUserQuestion') {
