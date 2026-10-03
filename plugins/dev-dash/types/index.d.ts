@@ -60,6 +60,18 @@ export type SessionRow = {
 
 export type DiskRow = { name: string; freeBytes: number; totalBytes: number }
 
+/** The pane's tabs. */
+export type TabId = 'dashboard' | 'entertainment' | 'custom'
+
+/** What the Spotify app on this machine reports; read locally, never stored or sent anywhere. */
+export type NowPlaying = {
+  /** playing: a track is on; idle: the app is open with nothing playing; closed: not running; unavailable: could not be read here. */
+  state: 'playing' | 'idle' | 'closed' | 'unavailable'
+  /** "Artist - Title" while playing, else ''. */
+  track: string
+  at: number
+}
+
 export type AgentState = 'working' | 'quiet' | 'done' | 'stopped'
 
 export type AgentRow = {
@@ -180,6 +192,8 @@ export type Snapshot = {
   /** Whether this session's dashboard pane is open (the band steps aside). */
   paneOpen: boolean
   disks: DiskRow[]
+  /** Only read while the Entertainment tab is showing; null before the first read. */
+  nowPlaying: NowPlaying | null
   git: GitInfo | null
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
@@ -199,6 +213,16 @@ declare module 'claude-code' {
       activity: number[]
       /** Whether the pane is open; kept by the host so a reload of the mod doesn't forget it. */
       paneOpen: boolean
+      /** The id of the row whose actions (copy, snooze, dismiss) are showing, or ''. */
+      openRow: string
+      /** Attention item ids snoozed, each with the time it comes back (ms since epoch). */
+      snoozed: Record<string, number>
+      /** Attention item ids dismissed until they change. */
+      dismissed: string[]
+      /** Whether the key list is open in the pane. */
+      help: boolean
+      /** The tab showing in the pane. */
+      tab: TabId
     }
   }
 }

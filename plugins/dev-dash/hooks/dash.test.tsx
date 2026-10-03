@@ -81,7 +81,7 @@ test('/dash shows attention, work in flight and PRs from git and gh', { timeoutM
   expect(await ui.find({ type: 'Text', text: /merged into main/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /CI failing/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /review #7 @teammate/ })).toBeDefined()
-  expect(await ui.find({ key: 'hide' })).toBeDefined()
+  expect(await ui.find({ key: 'key-close' })).toBeDefined()
   await ui.unmount()
 
   const hidden = await $.command.run({ command: 'dash-hide', args: '' })
@@ -236,7 +236,7 @@ test('redesigned pane adapts to narrow and wide docks', { timeoutMs: 15_000 }, a
   if (!(await narrow.find({ type: 'Text', text: /─{4,}/ }))) throw new Error('narrow: no claude beat line')
   expect(await narrow.find({ type: 'Text', text: /[▁-█]{3,}/ })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: /0 sessions/ })).toBeUndefined()
-  expect(await narrow.find({ key: 'hide' })).toBeDefined()
+  expect(await narrow.find({ key: 'key-close' })).toBeDefined()
   await narrow.unmount()
 
   const wide = await at(90)

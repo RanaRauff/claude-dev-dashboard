@@ -2,6 +2,7 @@
 // can be tested on plain values.
 
 import type { AgentRow, CiState, EventRow, PrRow, SessionRow, SessionState } from '../types'
+import { ids } from './keys'
 
 const baseName = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
 const oneLine = (s: string, n = 60) => {
@@ -193,7 +194,8 @@ export type Seen = {
 
 export const emptySeen = (): Seen => ({ sessions: new Map(), agents: new Map(), ci: new Map() })
 
-export type Change = EventRow & { isAlert: boolean }
+/** `itemId` ties a change to a row in the Attention section, so snoozing or dismissing that row also silences its toast. */
+export type Change = EventRow & { isAlert: boolean; itemId?: string }
 
 /**
  * Compares the last view with the new one. `isAlert` marks what is worth a toast:
@@ -215,17 +217,17 @@ export const changesBetween = (
     const was = seen.sessions.get(r.id)
     if (!isFirst && was) {
       if (r.state === 'waiting' && was.state !== 'waiting' && r.id !== selfId) {
-        out.push({ at: now, tone: 'warn', text: `${name(r)} needs ${r.waitingFor || 'you'}`, isAlert: true })
+        out.push({ at: now, tone: 'warn', text: `${name(r)} needs ${r.waitingFor || 'you'}`, isAlert: true, itemId: ids.wait(r) })
       }
       if (r.state === 'idle' && was.state === 'running' && now - was.since > 60_000 && r.id !== selfId) {
         const isLong = now - was.since >= LONG_TASK_MS
         out.push({ at: now, tone: 'ok', text: `${name(r)} finished${isLong ? ` after ${Math.round((now - was.since) / 60_000)}m` : ''}`, isAlert: isLong })
       }
       if (r.risky && r.risky !== was.risky) {
-        out.push({ at: now, tone: 'bad', text: `${name(r)} ran a risky command: ${r.risky}`, isAlert: true })
+        out.push({ at: now, tone: 'bad', text: `${name(r)} ran a risky command: ${r.risky}`, isAlert: true, itemId: ids.risky(r) })
       }
       if (r.stuck && r.stuck !== was.stuck) {
-        out.push({ at: now, tone: 'bad', text: `${name(r)} may be stuck: ${r.stuck}`, isAlert: true })
+        out.push({ at: now, tone: 'bad', text: `${name(r)} may be stuck: ${r.stuck}`, isAlert: true, itemId: ids.stuck(r) })
       }
     }
     if (!isFirst && !was && r.id !== selfId) out.push({ at: now, tone: 'info', text: `${name(r)} started`, isAlert: false })
@@ -246,7 +248,7 @@ export const changesBetween = (
   for (const p of mine ?? []) {
     const was = seen.ci.get(p.number)
     if (isFirst || was === undefined || was === p.ci) continue
-    if (p.ci === 'failing') out.push({ at: now, tone: 'bad', text: `#${p.number} CI went red`, isAlert: true })
+    if (p.ci === 'failing') out.push({ at: now, tone: 'bad', text: `#${p.number} CI went red`, isAlert: true, itemId: ids.ci(p) })
     else if (p.ci === 'passing' && was === 'failing') out.push({ at: now, tone: 'ok', text: `#${p.number} CI is green again`, isAlert: true })
   }
 
