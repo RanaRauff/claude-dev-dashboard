@@ -43,7 +43,26 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | **Sources** | 8 | URLs and searches sessions fetched (`WebFetch`, `WebSearch`), newest first, with the session that made them. Plugin sessions only. |
 | **Files** | 9 | Files each session edited this turn, with lines added and removed against `HEAD`. Plugin sessions only. |
 
-Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **r** refreshes, **h** hides the pane.
+## Keyboard
+
+`/dash` opens the pane with the keyboard already on it, so the keys work straight away. The footer always shows them, and **h** opens the full list inside the pane. **esc** gives the keyboard back to the prompt, and **ctrl+x tab** brings it back to the pane.
+
+| Key | Does |
+| --- | --- |
+| **j** / **k** | Move the cursor down and up through the rows (Attention, Sessions, Agents, PRs). A **▶** marks the selected row. |
+| **g** | Jump to the first row. |
+| **c** | Copy for the selected row: `claude --resume <id>` for a session or agent, the link for a PR, a one-line summary for the rest. |
+| **s** | Snooze the selected Attention item for 15 minutes, in the pane, the band above the prompt and the toasts. |
+| **x** | Dismiss the selected Attention item until it changes (a session that waits again, or fails differently, comes back). |
+| **u** | Bring back everything you snoozed or dismissed. |
+| **r** | Refresh everything now, PRs included. |
+| **a** | Turn toasts and the chime on or off. |
+| **h** | Show or hide the key list. |
+| **q** | Close the pane. |
+| **1**–**9** | Fold or unfold a section. |
+| arrows | Scroll the pane. |
+
+Only Attention items can be snoozed or dismissed. Snoozes last until their time is up and are forgotten when Claude Code restarts. Rows in the Plan, Sources and Files sections can't be selected yet.
 
 ## Alerts
 
@@ -68,8 +87,8 @@ The plugin is built on Claude Code's mods (function hooks) API, which is in **ea
 
 Then, in any session:
 
-- `/dash` opens the dashboard; it never opens by itself
-- `/dash-hide` closes it
+- `/dash` opens the dashboard with the keyboard on it; it never opens by itself
+- `/dash-hide` closes it (**q** in the pane)
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)

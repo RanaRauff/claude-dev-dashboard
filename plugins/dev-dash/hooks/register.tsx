@@ -45,6 +45,7 @@ import {
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
+import { isMuted } from './keys'
 import { pushActivity, registerDashPane } from './render'
 
 const PANE = 'dev-dash'
@@ -55,6 +56,8 @@ const STALE_MS = 90_000
 const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
+const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
+const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
@@ -622,8 +625,11 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
   if (sample) await update($, activity, h => pushActivity(h, sessions))
   const now = Date.now()
   const mine = ctx.prs && !ctx.prs.error ? ctx.prs.mine : null
+  const muting = { snoozed: (await read($, snoozed)) ?? {}, dismissed: (await read($, dismissed)) ?? [], now }
   for (const c of changesBetween(ctx.seen, sessions, agents, mine, ctx.selfId, now, ctx.isFirstLook)) {
-    note($, { at: c.at, tone: c.tone, text: c.text }, c.isAlert)
+    // A row you snoozed or dismissed in the pane stays in the feed but stops making noise.
+    const isMutedRow = c.itemId !== undefined && isMuted(muting, c.itemId)
+    note($, { at: c.at, tone: c.tone, text: c.text }, c.isAlert && !isMutedRow)
   }
   ctx.seen = remember(sessions, agents, mine)
   ctx.isFirstLook = false
@@ -870,7 +876,8 @@ export const register: Register = on => {
   on('command.run', { command: 'dash' }, async $ => {
     ctx.isOpen = true
     await update($, paneOpen, () => true)
-    await $.ui.open({ id: PANE, title: 'Dev dashboard' })
+    // focus: the keys work as soon as the pane is up, with no ctrl+x tab first.
+    await $.ui.open({ id: PANE, title: 'Dev dashboard', focus: true })
     if (ctx.disks.length === 0) void readDisks($)
     void tick($, true)
 

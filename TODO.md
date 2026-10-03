@@ -5,17 +5,17 @@ Mark an item done by changing `[ ]` to `[x]` in the PR that finishes it.
 
 ## Now
 
-### Keyboard-first navigation (Claude)
+### Keyboard-first navigation (Claude): mostly done
 Goal: every part of the pane reachable and usable from the keyboard, with the keys always visible on screen.
 
-- [ ] Open `/dash` with the keyboard already on the pane (no ctrl+x tab needed).
-- [ ] A selection cursor: `j` / `k` move down and up through items, `g` jumps to the top.
-- [ ] Row actions on the selected item: `c` copy (session id, PR link or branch), `s` snooze 15 minutes, `x` dismiss.
-- [ ] Snooze and dismiss respect the band above the prompt and the toasts too, not just the pane.
-- [ ] `h` opens a full key reference inside the pane; `q` closes the pane.
-- [ ] The key legend in the footer always matches the real keys (one keymap table drives both).
-- [ ] Sections added by others (Plan, Sources, Files) can register their rows into the cursor list.
-- [ ] Tests for the cursor, snooze, dismiss and the keymap; README gets a Keyboard section.
+- [x] Open `/dash` with the keyboard already on the pane (no ctrl+x tab needed).
+- [x] A selection cursor: `j` / `k` move down and up through items, `g` jumps to the top.
+- [x] Row actions on the selected item: `c` copy (resume command, PR link or a summary), `s` snooze 15 minutes, `x` dismiss.
+- [x] Snooze and dismiss respect the band above the prompt and the toasts too, not just the pane.
+- [x] `h` opens a full key reference inside the pane; `q` closes the pane.
+- [x] The key legend in the footer always matches the real keys (one keymap table drives both).
+- [ ] Sections added by others (Plan, Sources, Files) register their rows into the cursor list. (Claude; the cursor list is `itemsOf` in `hooks/attention.ts`)
+- [x] Tests for the cursor, snooze, dismiss and the keymap; README gets a Keyboard section.
 
 Why Buttons and not a custom key listener: a pane that has the keyboard presses any Button whose hotkey is one digit or one lowercase letter, and arrows already scroll. That covers everything above with no new module. Arrow-key selection would need a separate `Client` module and is not planned.
 

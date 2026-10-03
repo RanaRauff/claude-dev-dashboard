@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { AgentRow, SessionRow } from '../types'
+import { ids, isMuted } from './keys'
 import {
   agentStateOf,
   cacheHitPct,
@@ -244,5 +245,23 @@ describe('session summaries', () => {
     expect(tidySummary('Status: **Refactoring the auth module**\nextra words')).toBe('Refactoring the auth module')
     expect(tidySummary('')).toBe('')
     expect(tidySummary('word '.repeat(40), 30).length).toBe(30)
+  })
+})
+
+describe('toasts and muting', () => {
+  test('a toast carries the id of its Attention row, so snoozing the row silences it', () => {
+    const waiting = session({ id: 'a', name: 'Fix tests', state: 'waiting', waitingFor: 'input needed', stateSince: NOW - 1000 })
+    const before = remember([session({ id: 'a', name: 'Fix tests', state: 'running', stateSince: NOW - 30_000 })], [], null)
+    const [change] = changesBetween(before, [waiting], [], null, 'self', NOW, false)
+    expect(change.isAlert).toBe(true)
+    expect(change.itemId).toBe(ids.wait(waiting))
+    expect(isMuted({ snoozed: { [ids.wait(waiting)]: NOW + 60_000 }, dismissed: [], now: NOW }, change.itemId ?? '')).toBe(true)
+  })
+
+  test('changes that are not Attention rows have no id and are never silenced', () => {
+    const before = remember([], [], null)
+    const [started] = changesBetween(before, [session({ id: 'n', name: 'New one' })], [], null, 'self', NOW, false)
+    expect(started.text).toBe('New one started')
+    expect(started.itemId).toBeUndefined()
   })
 })

@@ -14,7 +14,10 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
-import { bytes, collisionsOf, isDiskLow } from './monitor'
+import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
+import { KEYMAP, dismissAdd, ids, itemById, moveSelection, neighbour, selectedId, snoozeAdd } from './keys'
+import type { KeyAction, Muting } from './keys'
+import { bytes, isDiskLow } from './monitor'
 import { progressSections } from './progress-view'
 
 export const PANE = 'dev-dash'
@@ -22,6 +25,10 @@ export const PANE = 'dev-dash'
 export const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 export const collapsed = atom({ plugin: 'dev-dash', key: 'collapsed' } as const, [])
 export const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
+export const cursor = atom({ plugin: 'dev-dash', key: 'cursor' } as const, '')
+export const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
+export const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
+export const showHelp = atom({ plugin: 'dev-dash', key: 'help' } as const, false)
 
 // ---------------------------------------------------------------------------
 // Palette: semantic roles on the 8 ANSI names, which every terminal theme
@@ -100,27 +107,9 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const toggle = (list: readonly DashSection[] | undefined, id: DashSection) =>
   (list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]
 
-/** What the Attention section counts, in urgency order. */
-export const attentionOf = (s: Snapshot) => {
-  const waiting = s.sessions.filter(r => r.state === 'waiting')
-  const stuck = s.sessions.filter(r => r.stuck)
-  const risky = s.sessions.filter(r => r.risky)
-  const disks = (s.disks ?? []).filter(isDiskLow)
-  const collisions = collisionsOf(s.sessions)
-  const limits = (s.limits ?? []).filter(l => l.pct >= 90 || isLimitAtRisk(l, Date.now()))
-  const failing = (s.prs?.mine ?? []).filter(p => p.ci === 'failing' || p.conflicts)
-  const reviews = s.prs?.toReview ?? []
-  const urgent = waiting.length + stuck.length + risky.length + collisions.length + limits.length + disks.length + failing.length
-  return { waiting, stuck, risky, collisions, limits, disks, failing, reviews, urgent, total: urgent + reviews.length }
-}
-
 // ---------------------------------------------------------------------------
 // Monitoring helpers
 // ---------------------------------------------------------------------------
-/** True when the limit will run out before it resets, at the recent pace. */
-export const isLimitAtRisk = (l: LimitRow, now: number) =>
-  l.etaMs !== null && (l.resetsAt === null || now + l.etaMs < l.resetsAt)
-
 export const limitTone = (l: LimitRow, now: number) =>
   l.pct >= 90 || isLimitAtRisk(l, now) ? TONE.bad : l.pct >= 70 ? TONE.warn : TONE.ok
 
@@ -175,6 +164,13 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const L = layoutFor(e.props.bodyColumns ?? (e.viewport ? e.viewport.columns - 2 : undefined))
     const { W, isNarrow } = L
     const now = Date.now()
+    const muting: Muting = {
+      snoozed: (await read($, snoozed)) ?? {},
+      dismissed: (await read($, dismissed)) ?? [],
+      now,
+    }
+    const storedCursor = (await read($, cursor)) || null
+    const isHelpOn = (await read($, showHelp)) === true
 
     const rule = (used: number) => '─'.repeat(clamp(W - used, 0, W))
 
@@ -201,6 +197,14 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       )
     }
 
+    // A selectable row: a marker in the margin when the cursor is on it, and a key the pane can scroll to.
+    const Row = (p: { id: string; children?: unknown }) => (
+      <Box key={`row-${p.id}`} flexDirection="row">
+        <Text bold color={TONE.accent}>{p.id === sel ? '▶' : ' '}</Text>
+        <Box flexDirection="column" flexGrow={1}>{p.children}</Box>
+      </Box>
+    )
+
     if (!s) {
       return (
         <Box flexDirection="column">
@@ -211,7 +215,10 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       )
     }
 
-    const att = attentionOf(s)
+    const att = attentionOf(s, muting)
+    const caps = { reviews: isNarrow ? 3 : 5, sessions: L.sessionRows, agents: isNarrow ? 4 : 8 }
+    const items = itemsOf(s, att, folded, caps)
+    const sel = selectedId(items, storedCursor)
     const g = s.git
     const costs = s.sessions.map(r => r.costUsd).filter((c): c is number => c !== null)
     const cost = costs.length ? costs.reduce((a, b) => a + b, 0) : null
@@ -284,47 +291,66 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
               </Text>
             )}
             {att.waiting.map(r => (
-              <Text color={TONE.warn} wrap="truncate-end">
-                ◆ {cut(r.name || where(r), W - 22)} · {r.waitingFor || 'waiting'} {ago(now - r.stateSince)}
-              </Text>
+              <Row id={ids.wait(r)}>
+                <Text color={TONE.warn} wrap="truncate-end">
+                  ◆ {cut(r.name || where(r), W - 22)} · {r.waitingFor || 'waiting'} {ago(now - r.stateSince)}
+                </Text>
+              </Row>
             ))}
             {att.stuck.map(r => (
-              <Text color={TONE.bad} wrap="truncate-end">
-                ⟳ {cut(r.name || where(r), W - 30)} may be stuck · {r.stuck}
-              </Text>
+              <Row id={ids.stuck(r)}>
+                <Text color={TONE.bad} wrap="truncate-end">
+                  ⟳ {cut(r.name || where(r), W - 30)} may be stuck · {r.stuck}
+                </Text>
+              </Row>
             ))}
             {att.risky.map(r => (
-              <Text color={TONE.bad} wrap="truncate-end">
-                ⚡ {cut(r.name || where(r), W - 30)} ran {r.risky}
-              </Text>
+              <Row id={ids.risky(r)}>
+                <Text color={TONE.bad} wrap="truncate-end">
+                  ⚡ {cut(r.name || where(r), W - 30)} ran {r.risky}
+                </Text>
+              </Row>
             ))}
             {att.disks.map(d => (
-              <Text color={TONE.bad} wrap="truncate-end">
-                ▼ disk {d.name} low · {bytes(d.freeBytes)} free of {bytes(d.totalBytes)}
-              </Text>
+              <Row id={ids.disk(d)}>
+                <Text color={TONE.bad} wrap="truncate-end">
+                  ▼ disk {d.name} low · {bytes(d.freeBytes)} free of {bytes(d.totalBytes)}
+                </Text>
+              </Row>
             ))}
             {att.collisions.map(c => (
-              <Text color={TONE.bad} wrap="truncate-end">
-                ⚠ {cut(c.file.split('/').pop() ?? c.file, 28)} edited by {c.sessions.join(' + ')}
-              </Text>
+              <Row id={ids.clash(c.file)}>
+                <Text color={TONE.bad} wrap="truncate-end">
+                  ⚠ {cut(c.file.split('/').pop() ?? c.file, 28)} edited by {c.sessions.join(' + ')}
+                </Text>
+              </Row>
             ))}
             {att.limits.map(l => (
-              <Text color={TONE.bad} wrap="truncate-end">
-                ▲ {l.kind} limit {Math.round(l.pct)}% · {limitNote(l, now)}
-              </Text>
+              <Row id={ids.limit(l)}>
+                <Text color={TONE.bad} wrap="truncate-end">
+                  ▲ {l.kind} limit {Math.round(l.pct)}% · {limitNote(l, now)}
+                </Text>
+              </Row>
             ))}
             {att.failing.map(p => (
-              <Text color={TONE.bad} wrap="truncate-end">
-                ✗ #{p.number} {p.conflicts ? 'conflicts' : 'CI failing'} · {p.repo ? `${p.repo} · ` : ''}{cut(p.title, W - 26 - p.repo.length)}
-              </Text>
+              <Row id={ids.ci(p)}>
+                <Text color={TONE.bad} wrap="truncate-end">
+                  ✗ #{p.number} {p.conflicts ? 'conflicts' : 'CI failing'} · {p.repo ? `${p.repo} · ` : ''}{cut(p.title, W - 26 - p.repo.length)}
+                </Text>
+              </Row>
             ))}
-            {att.reviews.slice(0, isNarrow ? 3 : 5).map(p => (
-              <Text color={TONE.info} wrap="truncate-end">
-                ◎ review #{p.number} @{p.author} · {p.repo ? `${p.repo} · ` : ''}{p.ageDays}d · {cut(p.title, W - 32 - p.author.length - p.repo.length)}
-              </Text>
+            {att.reviews.slice(0, caps.reviews).map(p => (
+              <Row id={ids.review(p)}>
+                <Text color={TONE.info} wrap="truncate-end">
+                  ◎ review #{p.number} @{p.author} · {p.repo ? `${p.repo} · ` : ''}{p.ageDays}d · {cut(p.title, W - 32 - p.author.length - p.repo.length)}
+                </Text>
+              </Row>
             ))}
-            {att.reviews.length > (isNarrow ? 3 : 5) && (
-              <Text dimColor>+{att.reviews.length - (isNarrow ? 3 : 5)} more reviews</Text>
+            {att.reviews.length > caps.reviews && (
+              <Text dimColor>+{att.reviews.length - caps.reviews} more reviews</Text>
+            )}
+            {att.hidden > 0 && (
+              <Text dimColor wrap="truncate-end">+{att.hidden} snoozed or dismissed · u brings them back</Text>
             )}
           </Box>
         )}
@@ -342,6 +368,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       const join = (xs: string[]) => xs.filter(Boolean).join(' · ')
       const hasCtx = r.contextPct !== null
       return (
+        <Row id={ids.session(r)}>
         <Box flexDirection="column">
           <Box flexDirection="row">
             <Text inverse color={STATE_TONE[r.state]}>{STATE_BADGE[r.state]}</Text>
@@ -369,6 +396,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             </Box>
           )}
         </Box>
+        </Row>
       )
     }
     const sessions = (
@@ -398,6 +426,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       const isLive = a.state === 'working'
       const age = isLive || a.state === 'quiet' ? `${ago(now - a.startedAt)}` : `${ago(now - a.lastActive)} ago`
       return (
+        <Row id={ids.agent(a)}>
         <Box flexDirection="column">
           <Box flexDirection="row">
             <Text color={look.tone} bold={isLive}>{isLive ? spinFrame(now) : look.glyph} </Text>
@@ -417,9 +446,10 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             </Box>
           )}
         </Box>
+        </Row>
       )
     }
-    const agentRows = isNarrow ? 4 : 8
+    const agentRows = caps.agents
     const agentsSection = (
       <Box flexDirection="column">
         <Heading
@@ -505,17 +535,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
                 </Box>
               )
             })}
-            <Box flexDirection="row" marginTop={0}>
-              <Text dimColor>events </Text>
-              <Button
-                key="alerts"
-                plain
-                hotkey="a"
-                label={s.alertsOn ? '🔔 alerts on' : '🔕 alerts off'}
-                dimColor={!s.alertsOn}
-                onPress={() => $.command.run({ command: 'dash-alerts', args: '' })}
-              />
-            </Box>
+            <Text dimColor>events · alerts {s.alertsOn ? 'on' : 'off'} (a)</Text>
             {events.length === 0 && <Text dimColor>{'  '}quiet so far</Text>}
             {events.map(ev => (
               <Text color={EVENT_TONE[ev.tone]} wrap="truncate-end">
@@ -593,6 +613,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       const ci = CI[p.ci]
       const rv = reviewChip(p)
       return (
+        <Row id={ids.pr(p)}>
         <Box flexDirection="column">
           <Box flexDirection="row" columnGap={1}>
             <Text bold>#{p.number}</Text>
@@ -609,6 +630,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             </Box>
           )}
         </Box>
+        </Row>
       )
     }
     const prs = s.prs
@@ -628,9 +650,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
                 <Text dimColor>to review ({prs.toReview.length})</Text>
                 {prs.toReview.length === 0 && <Text dimColor>{'  '}inbox zero</Text>}
                 {prs.toReview.map(p => (
-                  <Text wrap="truncate-end" color={p.ageDays >= 3 ? TONE.warn : undefined}>
-                    #{p.number} @{p.author} · {p.repo ? `${p.repo} · ` : ''}{p.ageDays}d · {cut(p.title, W - 20 - p.author.length - p.repo.length)}
-                  </Text>
+                  <Row id={ids.rv(p)}>
+                    <Text wrap="truncate-end" color={p.ageDays >= 3 ? TONE.warn : undefined}>
+                      #{p.number} @{p.author} · {p.repo ? `${p.repo} · ` : ''}{p.ageDays}d · {cut(p.title, W - 21 - p.author.length - p.repo.length)}
+                    </Text>
+                  </Row>
                 ))}
                 <Text dimColor>gh synced {ago(now - prs.fetchedAt)} ago</Text>
               </Box>
@@ -654,28 +678,79 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       fmt: { ago, cut, bar },
     })
 
+    // ---- keys -----------------------------------------------------------------
+    // One Button per key, drawn as the legend; the engine presses the right one while the pane holds the keyboard.
+    const go = async (id: string | null) => {
+      if (!id) return
+      await update($, cursor, () => id)
+      // Keep the row in view; a refused or failed scroll must never stop the cursor from moving.
+      await $.ui.scroll({ to: { key: `row-${id}` }, in: PANE }).catch(() => undefined)
+    }
+    const pick = () => itemById(items, sel)
+    const act: Record<KeyAction, () => unknown> = {
+      down: () => go(moveSelection(items, sel, 1)),
+      up: () => go(moveSelection(items, sel, -1)),
+      top: () => go(items[0]?.id ?? null),
+      copy: async () => {
+        const it = pick()
+        if (!it) return $.ui.toast('Nothing selected')
+        const r = await $.ui.copy({ text: it.copy, surface: e.surface })
+        return $.ui.toast(r.isCopied ? `Copied the ${it.what}` : 'Could not copy to the clipboard')
+      },
+      snooze: async () => {
+        const it = pick()
+        if (!it) return $.ui.toast('Nothing selected')
+        if (!it.canMute) return $.ui.toast('Only Attention items can be snoozed')
+        await update($, cursor, () => neighbour(items, it.id) ?? '')
+        await update($, snoozed, m => snoozeAdd(m ?? {}, it.id, Date.now()))
+        return $.ui.toast('Snoozed for 15 minutes')
+      },
+      dismiss: async () => {
+        const it = pick()
+        if (!it) return $.ui.toast('Nothing selected')
+        if (!it.canMute) return $.ui.toast('Only Attention items can be dismissed')
+        await update($, cursor, () => neighbour(items, it.id) ?? '')
+        await update($, dismissed, d => dismissAdd(d ?? [], it.id))
+        return $.ui.toast('Dismissed until it changes')
+      },
+      undo: async () => {
+        await update($, snoozed, () => ({}))
+        await update($, dismissed, () => [])
+        return $.ui.toast('Brought back what you snoozed or dismissed')
+      },
+      refresh: () => $.command.run({ command: 'dash-refresh', args: '' }),
+      alerts: () => $.command.run({ command: 'dash-alerts', args: '' }),
+      help: () => update($, showHelp, v => !v),
+      close: () => $.command.run({ command: 'dash-hide', args: '' }),
+    }
+
+    const helpPanel = isHelpOn && (
+      <Box borderStyle="round" borderColor={TONE.info} paddingX={1} flexDirection="column" width={W} marginTop={1}>
+        <Text bold>Keys</Text>
+        {(['Move', 'Act', 'Pane'] as const).map(group => (
+          <Box flexDirection="column">
+            <Text dimColor>{group}</Text>
+            {KEYMAP.filter(k => k.group === group).map(k => (
+              <Text wrap="truncate-end">
+                {'  '}<Text bold color={TONE.accent}>{k.key}</Text>{'  '}{cut(k.help, W - 10)}
+              </Text>
+            ))}
+          </Box>
+        ))}
+        <Text dimColor wrap="truncate-end">1-9 fold a section · arrows scroll · esc returns to the prompt</Text>
+      </Box>
+    )
+
     // ---- footer ---------------------------------------------------------------
     const footer = (
-      <Box flexDirection="row" marginTop={1}>
-        <Button
-          key="hide"
-          plain
-          hotkey="h"
-          label="hide"
-          dimColor
-          onPress={() => $.command.run({ command: 'dash-hide', args: '' })}
-        />
-        <Text dimColor>  </Text>
-        <Button
-          key="refresh"
-          plain
-          hotkey="r"
-          label="refresh"
-          dimColor
-          onPress={() => $.command.run({ command: 'dash-refresh', args: '' })}
-        />
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {KEYMAP.map(k => (
+            <Button key={`key-${k.action}`} plain hotkey={k.key} label={k.label} dimColor onPress={act[k.action]} />
+          ))}
+        </Box>
         <Text dimColor wrap="truncate-end">
-          {e.props.isFocused ? '  1-9 fold · a alerts · ↑↓ scroll · esc back' : isNarrow ? '  ctrl+x tab: keys' : '  ctrl+x tab for keys · 1-9 fold · a alerts'}
+          {e.props.isFocused ? '1-9 fold · arrows scroll · esc back to the prompt' : 'ctrl+x tab to use the keys · 1-9 fold'}
         </Text>
       </Box>
     )
@@ -683,6 +758,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     return (
       <Box flexDirection="column" width={W}>
         {header}
+        {helpPanel}
         {attention}
         {sessions}
         {agentsSection}
@@ -703,7 +779,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const { Box, Text } = $.ui.resolve(e)
     const now = Date.now()
     const W = Math.max(30, e.props.bodyColumns)
-    const att = attentionOf(s)
+    const att = attentionOf(s, {
+      snoozed: (await read($, snoozed)) ?? {},
+      dismissed: (await read($, dismissed)) ?? [],
+      now,
+    })
     const name = (r: SessionRow) => r.name || where(r)
 
     // The single most urgent thing, in the same order as the Attention section.
