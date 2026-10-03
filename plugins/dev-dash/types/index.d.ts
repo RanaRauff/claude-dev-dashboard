@@ -200,6 +200,10 @@ export type Snapshot = {
   focusOn: boolean
   /** The colour theme (/dash-theme). `auto` follows the terminal's own colours. */
   theme: ThemeId
+  /** What the header draws in the claude beat's place: the red line (default) or a buddy (/dash-beat). */
+  beatStyle: BeatStyle
+  /** The buddy pack in use (a file name, no path), '' for none. */
+  buddyName: string
   git: GitInfo | null
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
@@ -208,6 +212,8 @@ export type Snapshot = {
   iconStyle?: IconStyle
   updatedAt: number
 }
+
+export type BeatStyle = 'line' | 'buddy'
 
 export type ThemeId = 'auto' | 'claude' | 'nord' | 'neon' | 'crt' | 'light' | 'mono' | 'hacker'
 
@@ -218,8 +224,8 @@ declare module 'claude-code' {
     'dev-dash': {
       snap: Snapshot | null
       collapsed: DashSection[]
-      /** Flips every second while the pane is open: the claude beat's tip blinks with it. */
-      blink: boolean
+      /** Counts half-seconds while the pane is open: the claude beat's tip blinks and the buddy steps with it. */
+      blink: number
       /** Sections the person opened while the focus fold is on. */
       expanded: DashSection[]
       activity: number[]
