@@ -18,7 +18,9 @@ import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
 import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './keys'
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
+import { TABS, isTab } from './entertainment'
 import { progressSections } from './progress-view'
+import { customView, entertainmentView } from './tabs-view'
 import { testBadge } from './testrun'
 import { watchingSection } from './watch-view'
 
@@ -31,6 +33,7 @@ export const openRow = atom({ plugin: 'dev-dash', key: 'openRow' } as const, '')
 export const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
 export const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
 export const showHelp = atom({ plugin: 'dev-dash', key: 'help' } as const, false)
+export const tabState = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashboard')
 
 // ---------------------------------------------------------------------------
 // Palette: semantic roles on the 8 ANSI names, which every terminal theme
@@ -173,6 +176,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     }
     const opened = (await read($, openRow)) || ''
     const isHelpOn = (await read($, showHelp)) === true
+    const storedTab = await read($, tabState)
+    const tab = isTab(storedTab) ? storedTab : 'dashboard'
 
     const rule = (used: number) => '─'.repeat(clamp(W - used, 0, W))
 
@@ -770,20 +775,48 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       </Box>
     )
 
+    // ---- tabs: Dashboard is everything above; the other two are drawn by tabs-view.tsx -------------------
+    // Each tab is a Button, so Tab and the arrows reach them like everything else. On a tab with no rows the
+    // active tab takes the focus ring when the pane gets the keyboard.
+    const tabBar = (
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+        {TABS.map(t => (
+          <Button
+            key={`tab-${t.id}`}
+            label={t.id === tab ? `● ${t.label}` : t.label}
+            variant={t.id === tab ? 'primary' : 'secondary'}
+            autoFocus={t.id === tab && tab !== 'dashboard' ? true : undefined}
+            onPress={() => update($, tabState, () => t.id)}
+          />
+        ))}
+      </Box>
+    )
+    // Away from the Dashboard tab the big header is replaced by one line, so a session waiting for you still shows.
+    const statusLine = (
+      <Box flexDirection="row" marginTop={1}>
+        <Text bold color={headTone}>{att.total > 0 ? `◆ ${att.total} need${att.total === 1 ? 's' : ''} you` : '✓ all clear'}</Text>
+        <Text dimColor wrap="truncate-end">{limits.length > 0 ? ` · ${limits.map(l => `${l.kind} ${Math.round(l.pct)}%`).join(' · ')}` : ''}{att.total > 0 ? ' · see the Dashboard tab' : ''}</Text>
+      </Box>
+    )
+    const tabView = { Box, Text, W, now, tone: TONE, fmt: { ago, cut } }
+
     return (
       <Box flexDirection="column" width={W}>
-        {header}
+        {tabBar}
+        {tab === 'dashboard' ? header : statusLine}
         {helpPanel}
-        {watching}
-        {attention}
-        {sessions}
-        {agentsSection}
-        {monitor}
-        {work}
-        {prSection}
-        {progress.plan}
-        {progress.sources}
-        {progress.files}
+        {tab === 'dashboard' && watching}
+        {tab === 'dashboard' && attention}
+        {tab === 'dashboard' && sessions}
+        {tab === 'dashboard' && agentsSection}
+        {tab === 'dashboard' && monitor}
+        {tab === 'dashboard' && work}
+        {tab === 'dashboard' && prSection}
+        {tab === 'dashboard' && progress.plan}
+        {tab === 'dashboard' && progress.sources}
+        {tab === 'dashboard' && progress.files}
+        {tab === 'entertainment' && entertainmentView(tabView, s.nowPlaying ?? null)}
+        {tab === 'custom' && customView(tabView)}
         {footer}
       </Box>
     )

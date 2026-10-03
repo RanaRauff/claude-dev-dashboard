@@ -10,6 +10,7 @@ import type {
   EventRow,
   GitInfo,
   LimitRow,
+  NowPlaying,
   PlanProgress,
   PrInfo,
   PrRow,
@@ -50,6 +51,8 @@ import {
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { runExe as runExeWith } from './exe'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
+import { isTab, nowPlayingCommand, parseNowPlaying, unavailable } from './entertainment'
+import type { Platform } from './entertainment'
 import { isMuted } from './keys'
 import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
@@ -83,6 +86,7 @@ const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
 const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
+const tab = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashboard')
 const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
@@ -174,6 +178,9 @@ const ctx = {
   disks: [] as DiskRow[],
   lowDisks: new Set<string>(),
   isWindows: false,
+  platform: 'linux' as Platform,
+  nowPlaying: null as NowPlaying | null,
+  nowPlayingAt: 0,
   plan: null as PlanProgress | null,
   planAt: 0,
   sources: [] as SourceRow[],
@@ -720,6 +727,7 @@ async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample
       summariesOn: ctx.summariesOn,
       paneOpen: ctx.isOpen,
       disks: ctx.disks,
+      nowPlaying: ctx.nowPlaying,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       watches: ctx.watches,
@@ -846,6 +854,20 @@ async function tick($: Engine, withPrs: boolean) {
   }
 }
 
+// What Spotify on this machine is playing, read with a local command. Only while the pane is open and the
+// Entertainment tab is the one showing, and no more often than every few seconds.
+async function readNowPlaying($: Engine) {
+  const now = Date.now()
+  if (now - ctx.nowPlayingAt < 4000) return
+  ctx.nowPlayingAt = now
+  try {
+    const r = await $.process.run(nowPlayingCommand(ctx.platform), { timeoutMs: 8000 })
+    ctx.nowPlaying = parseNowPlaying(ctx.platform, r.stdout, r.exitCode, now)
+  } catch {
+    ctx.nowPlaying = unavailable(now)
+  }
+}
+
 async function tickNow($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
@@ -854,6 +876,10 @@ async function tickNow($: Engine, withPrs: boolean) {
   if (me.state === 'running' && ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
+  if (ctx.isOpen) {
+    const showing = await read($, tab)
+    if (isTab(showing) && showing === 'entertainment') await readNowPlaying($)
+  }
   // The list is read from the store inside, so a watch another session added is picked up too.
   if (ctx.isOpen) await pollWatches($, false)
   if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
@@ -926,6 +952,11 @@ export const register: Register = on => {
     ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, Date.now()))
     await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    if (ctx.isWindows) ctx.platform = 'windows'
+    else {
+      const uname = await $.process.run(['uname', '-s'], { timeoutMs: 5000 }).catch(() => undefined)
+      ctx.platform = uname?.stdout.trim() === 'Darwin' ? 'mac' : 'linux'
+    }
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
     ctx.isOpen = (await read($, paneOpen)) === true
     await tick($, ctx.isOpen)
