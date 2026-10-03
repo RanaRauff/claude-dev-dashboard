@@ -32,7 +32,7 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | Section | Key | Contents |
 | --- | --- | --- |
 | **Band above the prompt** | | One line under your conversation while the pane is closed: the most urgent thing that needs you, plus limits, context, running sessions and busy agents. `/dash-band off` hides it. |
-| **Header** | | Overall status (green all clear, yellow needs you), session and agent counts, total cost, usage-limit bars, and **claude beat**: a heartbeat-monitor line (drawn in braille dots, two rows high in a wide dock) of how many sessions were running or waiting at each sync, a flatline when none are. |
+| **Header** | | Overall status (green all clear, yellow needs you), session and agent counts, total cost, usage-limit bars, and **claude beat**: an ECG in red, drawn in braille dots (two rows high in a wide dock): a flat baseline with a heartbeat (a small bump, a sharp spike with a dip below the line, a rounded bump) at every sync where sessions were running or waiting, as tall as that sync was busy, and a flatline when none were. |
 | **Attention** | 1 | Sessions waiting on you (and what for), sessions that look stuck, risky commands (`rm -rf`, force push, `reset --hard`, …), two sessions editing the same file, a usage limit about to run out, a disk running low, your PRs with failing CI or conflicts, and PRs awaiting your review. |
 | **Sessions** | 2 | Every running Claude Code session on this machine, CLI or desktop, plugin or not: its title, repo and branch, state and for how long, and uptime. Sessions that also load the plugin add context use, cost and their latest step. |
 | **Agents** | 3 | Every subagent of every running session: description, type, owning session, steps taken, and what it's doing now. Finished and stopped agents stay for 30 minutes. |
@@ -87,7 +87,7 @@ Then, in any session:
 
 ### Requirements
 
-- `git` on your `PATH`.
+- `git` on your `PATH`. If `git` or `gh` is installed but this session can't find it (an app started before it was installed keeps its old `PATH` until it is restarted), dev-dash tries the standard Windows install folders (`%ProgramFiles%\Git\cmd\git.exe`, `%ProgramFiles%\GitHub CLI\gh.exe`) before giving up. Without `git` the Files section still lists what was edited, just without line counts.
 - For **PRs & CI** and `/dash-watch`, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works. If `gh` is installed but this session can't find it (an app started before it was installed keeps its old `PATH` until it is restarted), dev-dash tries the standard Windows install folder (`%ProgramFiles%\GitHub CLI\gh.exe`) before giving up.
 - Usage limits appear on Pro and Max plans, after the session's first reply.
 

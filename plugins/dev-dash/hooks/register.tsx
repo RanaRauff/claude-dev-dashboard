@@ -216,9 +216,47 @@ const me = {
   turnFiles: [] as ChangedFile[],
 }
 
+// Run `git` or `gh`. The process Claude Code runs in can have an older PATH than the machine: an app that was
+// started before they were installed keeps its old environment until it is restarted. So if the program cannot be
+// started on Windows, try its standard install folder before giving up, and remember whichever worked.
+const WINDOWS_INSTALLS: Record<'git' | 'gh', (programFiles: string) => string[]> = {
+  gh: pf => [`${pf}\\GitHub CLI\\gh.exe`],
+  git: pf => [`${pf}\\Git\\cmd\\git.exe`, `${pf}\\Git\\bin\\git.exe`],
+}
+const exeFound = new Map<string, string>()
+
+async function runExe($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: number) {
+  const known = exeFound.get(name)
+  if (known) {
+    try {
+      return await $.process.run([known, ...args], { timeoutMs })
+    } catch {
+      exeFound.delete(name)
+    }
+  }
+  try {
+    const r = await $.process.run([name, ...args], { timeoutMs })
+    exeFound.set(name, name)
+
+    return r
+  } catch (err) {
+    const programFiles = (await $.env.get('OS')) === 'Windows_NT' ? await $.env.get('ProgramFiles') : undefined
+    if (!programFiles) throw err
+    for (const exe of WINDOWS_INSTALLS[name](programFiles)) {
+      try {
+        const r = await $.process.run([exe, ...args], { timeoutMs })
+        exeFound.set(name, exe)
+
+        return r
+      } catch {}
+    }
+    throw err
+  }
+}
+
 async function git($: Engine, args: string[]) {
   try {
-    const r = await $.process.run(['git', ...args], { timeoutMs: 10_000 })
+    const r = await runExe($, 'git', args, 10_000)
     return r.exitCode === 0 ? r.stdout : null
   } catch {
     return null
@@ -590,32 +628,7 @@ async function readGit($: Engine): Promise<GitInfo | null> {
   }
 }
 
-// Run `gh`. The process Claude Code runs in can have an older PATH than the machine: an app that was started
-// before gh was installed keeps its old environment until it is restarted. So if `gh` cannot be started on
-// Windows, try the standard install folder before giving up, and remember whichever worked.
-let ghExe: string | null = null
-
-async function runGh($: Engine, args: string[], timeoutMs: number) {
-  if (ghExe) return $.process.run([ghExe, ...args], { timeoutMs })
-  try {
-    const r = await $.process.run(['gh', ...args], { timeoutMs })
-    ghExe = 'gh'
-
-    return r
-  } catch (err) {
-    const programFiles = ctx.isWindows ? await $.env.get('ProgramFiles') : undefined
-    if (!programFiles) throw err
-    const exe = `${programFiles}\\GitHub CLI\\gh.exe`
-    try {
-      const r = await $.process.run([exe, ...args], { timeoutMs })
-      ghExe = exe
-
-      return r
-    } catch {
-      throw err
-    }
-  }
-}
+const runGh = ($: Engine, args: string[], timeoutMs: number) => runExe($, 'gh', args, timeoutMs)
 
 async function readPrs($: Engine): Promise<PrInfo> {
   try {
@@ -721,7 +734,14 @@ async function setState($: Engine, state: SessionState) {
 async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
   const files: ChangedFile[] = []
   for (const file of [...ctx.turnEdits.values()].slice(-TURN_FILES_KEPT)) {
-    const diff = parseNumstat((await git($, ['diff', '--numstat', 'HEAD', '--', file])) ?? '')[0]
+    const out = await git($, ['diff', '--numstat', 'HEAD', '--', file])
+    // git could not answer (not found, not a repository, or the file is outside one): the file was still edited
+    // this turn, so it is listed, with its line counts marked as unknown rather than left out.
+    if (out === null) {
+      files.push({ path: file, added: 0, removed: 0, counted: false })
+      continue
+    }
+    const diff = parseNumstat(out)[0]
     if (diff) {
       files.push({ path: file, added: diff.added, removed: diff.removed })
       continue

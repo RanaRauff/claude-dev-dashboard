@@ -7,7 +7,13 @@ export type PlanProgress = { done: number; total: number; current: string }
 export type SourceRow = { at: number; kind: 'fetch' | 'search'; label: string }
 
 /** A file edited this turn, with lines added and removed versus HEAD. */
-export type ChangedFile = { path: string; added: number; removed: number }
+export type ChangedFile = {
+  path: string
+  added: number
+  removed: number
+  /** False when git could not count its lines (so added and removed are not real): shown without +/-. */
+  counted?: boolean
+}
 
 export type SessionRow = {
   id: string

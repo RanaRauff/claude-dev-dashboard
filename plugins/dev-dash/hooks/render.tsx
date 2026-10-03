@@ -15,7 +15,7 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { bytes, collisionsOf, isDiskLow } from './monitor'
-import { beatLine } from './beat'
+import { claudeBeat } from './beat'
 import { progressSections } from './progress-view'
 import { watchingSection } from './watch-view'
 
@@ -222,8 +222,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const agents = s.agents ?? []
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
-    // "claude beat": the activity trace as a heartbeat-monitor line (a flatline when nothing is running).
-    const beat = beatLine(samples, L.sparkCells, isNarrow ? 1 : 2)
+    // "claude beat": the activity as an ECG, a heartbeat on a flat baseline wherever sessions were busy.
+    const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 1 : 2)
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -248,12 +248,12 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         )}
         <Box flexDirection="row" columnGap={1}>
           <Box flexDirection="column">
-            <Text bold color={TONE.accent}>♥ claude beat</Text>
+            <Text bold color="red">♥ claude beat</Text>
             <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
           </Box>
           <Box flexDirection="column">
             {beat.map(row => (
-              <Text color={TONE.ok}>{row}</Text>
+              <Text color="red">{row}</Text>
             ))}
           </Box>
         </Box>

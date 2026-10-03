@@ -258,7 +258,12 @@ test('shows plan progress, sources and files changed from session heartbeats', {
       { path: '/w/api/src/form.tsx', added: 12, removed: 0 },
     ],
   }
-  const files = new Map<string, string>([['/cfg/dev-dash/sessions/worker.json', JSON.stringify(beat)]])
+  // A second session whose edits git could not count (git not found, say): listed as edited, without made-up numbers.
+  const uncounted = { ...beat, id: 'worker2', name: 'Docs fixer', plan: null, sources: [], turnFiles: [{ path: '/w/api/README.md', added: 0, removed: 0, counted: false }] }
+  const files = new Map<string, string>([
+    ['/cfg/dev-dash/sessions/worker.json', JSON.stringify(beat)],
+    ['/cfg/dev-dash/sessions/worker2.json', JSON.stringify(uncounted)],
+  ])
   const unify = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
   const none = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -299,10 +304,48 @@ test('shows plan progress, sources and files changed from session heartbeats', {
   await has(/Sources \(2\)/)
   await has(/example\.com\/docs\/auth/)
   await has(/oauth device flow/)
-  await has(/Files \(2\)/)
+  await has(/Files \(3\)/)
   await has(/\+52/)
   await has(/login\.ts/)
+  await has(/README\.md/)
+  await has(/edited/)
+  expect(await ui.find({ type: 'Text', text: /README\.md.*\+0/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('finds git and gh in their install folders when the process PATH does not have them', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const called: string[] = []
+  const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now - 60_000, context: { window: 200_000, percent: 10 }, rateLimits: [], cost: { usd: 0.1 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : e.name === 'OS' ? 'Windows_NT' : e.name === 'ProgramFiles' ? 'C:\\Program Files' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('ui.close', async () => ({ value: undefined }))
+  // Only the full install paths work: plain `git` and `gh` are "not found", as in a process with an old PATH.
+  on('process.run', async (_$, e) => {
+    called.push(e.argv[0])
+    if (e.argv[0] === 'git' || e.argv[0] === 'gh') throw new Error('spawn ENOENT')
+    if (e.argv[0].endsWith('git.exe')) return ok('main\n')
+    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.list', async () => ({ value: [] }))
+  on('fs.stat', async () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.read', async () => ({ value: '' }))
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'dash', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+
+  expect(called.some(c => c.endsWith('git.exe'))).toBe(true)
+  expect(called.some(c => c.endsWith('gh.exe'))).toBe(true)
 })
 
 test('summaries: off by default, on writes a one-line label after a finished turn', { timeoutMs: 15_000 }, async ($, on) => {
