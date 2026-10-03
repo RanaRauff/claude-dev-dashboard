@@ -676,6 +676,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       Heading,
       folded,
       watches: s.watches ?? [],
+      iconStyle: s.iconStyle,
       W,
       now,
       tone: TONE,

@@ -127,6 +127,14 @@ export type PrInfo = { error: string | null; mine: PrRow[]; toReview: PrRow[]; f
 /** What /dash-watch can keep an eye on: a GitHub pull request, issue or Actions run. */
 export type WatchKind = 'pr' | 'issue' | 'run'
 
+/** How the icon for where a watch lives is drawn: emoji (any font), the official mark from a Nerd Font, or letters. */
+export type IconStyle = 'emoji' | 'nerd' | 'ascii'
+
+export type WatchTone = 'ok' | 'warn' | 'bad' | 'info' | 'mute'
+
+/** One small status mark in a watch's box: an icon, a word or two, and how it should be coloured. */
+export type WatchChip = { icon: string; text: string; tone: WatchTone }
+
 /** Something the person asked to keep an eye on with /dash-watch. */
 export type WatchRow = {
   /** `pr:<owner/repo>#<number>`, `issue:…` or `run:…`, lower case. */
@@ -137,6 +145,10 @@ export type WatchRow = {
   /** The pull request or issue number, or the Actions run id. */
   number: number
   title: string
+  /** The status marks as last read; a list saved before there were any has none. */
+  chips?: WatchChip[]
+  /** The box's overall colour as last read. */
+  tone?: WatchTone
   addedAt: number
   /** When it stops being polled and drops off the list: 24 hours after it was added, or after it last fired. */
   expiresAt: number
@@ -172,6 +184,8 @@ export type Snapshot = {
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
   watches?: WatchRow[]
+  /** Which icon set the Watching boxes use; `/dash-icons` changes it. */
+  iconStyle?: IconStyle
   updatedAt: number
 }
 
