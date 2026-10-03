@@ -44,8 +44,9 @@ import {
   tidySummary,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
-import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
+import { handoffName, handoffNote } from './handoff'
 import { isMuted } from './keys'
+import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
 
 const PANE = 'dev-dash'
@@ -121,6 +122,7 @@ const toRow = (p: GhPr): PrRow => ({
 const ctx = {
   selfId: '',
   dir: '',
+  handoffDir: '',
   registryDir: '',
   root: '',
   projectsDir: '',
@@ -754,6 +756,7 @@ export const register: Register = on => {
     const config = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
     ctx.root = `${config}/dev-dash`
     ctx.dir = `${config}/dev-dash/sessions`
+    ctx.handoffDir = `${config}/dev-dash/handoffs`
     ctx.registryDir = `${config}/sessions`
     ctx.projectsDir = `${config}/projects`
     me.id = ctx.selfId
@@ -930,6 +933,37 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
+
+  // A handoff note whenever the main conversation compacts, for whoever picks the work up after.
+  // `precompute` installs nothing and a subagent's own compaction is not this session's, so both are skipped.
+  on('session.compact', async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId || e.trigger === 'precompute' || ran.skip !== undefined || !ctx.handoffDir || !ctx.selfId) return ran
+    const at = Date.now()
+    try {
+      await $.fs.write(
+        `${ctx.handoffDir}/${handoffName(at, ctx.selfId)}`,
+        handoffNote({
+          at,
+          sessionId: ctx.selfId,
+          name: me.name,
+          repo: me.repo,
+          branch: me.branch,
+          cwd: me.cwd,
+          trigger: e.trigger,
+          tokensBefore: ran.tokensBefore,
+          tokensAfter: ran.tokensAfter,
+          plan: ctx.plan,
+          lastTool: me.lastTool,
+          files: me.editing,
+          summary: ran.messages[0]?.text ?? '',
+        }),
+      )
+      note($, { at, tone: 'info', text: 'saved a handoff note for this compaction' }, false)
+    } catch {}
+
+    return ran
+  })
 
   on('command.run', { command: 'dash' }, async $ => {
     ctx.isOpen = true
