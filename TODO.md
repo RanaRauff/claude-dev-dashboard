@@ -57,3 +57,4 @@ Mocks: https://claude.ai/artifact/JYNHbTvB7nbN8Qx8TgTai3 (private link; the same
 - [x] Dashboard pane, agents, monitor, band above the prompt, alerts (PRs #1, #2, #3)
 - [x] Research on what people build with mods (PR #5)
 - [x] Connor invited as a collaborator; PR #6 opened
+- [x] **Test badge**: a pass/fail badge on each session row for the last test run it started (Connor, PR open)
