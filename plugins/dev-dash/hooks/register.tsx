@@ -1,17 +1,47 @@
-import { atom, read, update } from 'claude-code'
+import { atom, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
-import type { BranchRow, CiState, GitInfo, PrInfo, PrRow, SessionRow, SessionState, Snapshot, WorktreeRow } from '../types'
+import type {
+  AgentRow,
+  BranchRow,
+  CiState,
+  EventRow,
+  GitInfo,
+  LimitRow,
+  PrInfo,
+  PrRow,
+  SessionRow,
+  SessionState,
+  Snapshot,
+  WorktreeRow,
+} from '../types'
+import {
+  agentStateOf,
+  callKey,
+  changesBetween,
+  crossedSteps,
+  emptySeen,
+  limitLabel,
+  parseShortstat,
+  remember,
+  runwayMs,
+  stepLabel,
+  stuckReason,
+  summarizeAgent,
+} from './monitor'
+import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
+import { pushActivity, registerDashPane } from './render'
 
 const PANE = 'dev-dash'
 const TICK_MS = 5000
 const PR_EVERY_TICKS = 12
 const STALE_MS = 90_000
+// Same refs as ./render.tsx; defined here because the validator reads each module's atoms from its own source.
 const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
+const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
-const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s)
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -23,36 +53,49 @@ const ago = (ms: number) => {
   return `${Math.floor(s / 86400)}d`
 }
 
-type Check = { conclusion?: string; status?: string; state?: string }
+// Your PRs across every repository, not just the one the session sits in, from one
+// GitHub search. The rollup state is the latest commit's combined CI result.
+const PR_QUERY = `query($mine: String!, $review: String!) {
+  mine: search(query: $mine, type: ISSUE, first: 20) { nodes { ...pr } }
+  review: search(query: $review, type: ISSUE, first: 20) { nodes { ...pr } }
+}
+fragment pr on PullRequest {
+  number title url createdAt
+  repository { nameWithOwner }
+  author { login }
+  reviewDecision mergeable
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+}`
 
-const FAILED = ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']
-const PENDING = ['', 'PENDING', 'QUEUED', 'IN_PROGRESS', 'EXPECTED', 'WAITING']
-
-const ciOf = (rollup: Check[] | undefined): CiState => {
-  if (!rollup || rollup.length === 0) return 'none'
-  const marks = rollup.map(c => (c.conclusion || c.state || c.status || '').toUpperCase())
-  if (marks.some(m => FAILED.includes(m))) return 'failing'
-  if (marks.some(m => PENDING.includes(m))) return 'pending'
+const ciOf = (state: string | undefined | null): CiState => {
+  const s = (state ?? '').toUpperCase()
+  if (!s) return 'none'
+  if (s === 'FAILURE' || s === 'ERROR') return 'failing'
+  if (s === 'PENDING' || s === 'EXPECTED') return 'pending'
   return 'passing'
 }
 
 type GhPr = {
-  number: number
-  title: string
-  author?: { login?: string }
-  createdAt: string
-  reviewDecision?: string
-  statusCheckRollup?: Check[]
+  number?: number
+  title?: string
+  url?: string
+  createdAt?: string
+  repository?: { nameWithOwner?: string }
+  author?: { login?: string } | null
+  reviewDecision?: string | null
   mergeable?: string
+  commits?: { nodes?: Array<{ commit?: { statusCheckRollup?: { state?: string } | null } }> }
 }
 
 const toRow = (p: GhPr): PrRow => ({
-  number: p.number,
-  title: p.title,
+  number: p.number ?? 0,
+  title: p.title ?? '',
+  repo: (p.repository?.nameWithOwner ?? '').split('/').pop() ?? '',
+  url: p.url ?? '',
   author: p.author?.login ?? '',
-  ageDays: Math.floor((Date.now() - Date.parse(p.createdAt)) / 86_400_000),
+  ageDays: Math.floor((Date.now() - Date.parse(p.createdAt ?? '')) / 86_400_000) || 0,
   review: (p.reviewDecision || 'NONE').replace('_', ' ').toLowerCase(),
-  ci: ciOf(p.statusCheckRollup),
+  ci: ciOf(p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state),
   conflicts: p.mergeable === 'CONFLICTING',
 })
 
@@ -60,15 +103,33 @@ const ctx = {
   selfId: '',
   dir: '',
   registryDir: '',
+  projectsDir: '',
   isOpen: false,
   ticks: 0,
   prs: null as PrInfo | null,
+  alertsOn: true,
+  seen: emptySeen(),
+  isFirstLook: true,
+  events: [] as EventRow[],
+  limitSamples: new Map<string, Sample[]>(),
+  limits: [] as LimitRow[],
+  lastContextPct: null as number | null,
+  calls: [] as CallMark[],
+  edits: new Map<string, number>(),
 }
+
+const EVENTS_KEPT = 30
+const EDIT_WINDOW_MS = 30 * 60_000
+const LIMIT_WINDOW_MS = 30 * 60_000
+const AGENT_RECENT_MS = 30 * 60_000
+const normPath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+const slugOf = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, '-')
 const me = {
   id: '',
   name: '',
   app: '',
   hasPlugin: true,
+  waitingFor: '',
   cwd: '',
   repo: '',
   branch: '',
@@ -76,6 +137,8 @@ const me = {
   stateSince: Date.now(),
   startedAt: Date.now(),
   lastTool: '',
+  stuck: '',
+  editing: [] as string[],
 }
 
 async function git($: Engine, args: string[]) {
@@ -91,12 +154,20 @@ async function heartbeat($: Engine) {
   if (!ctx.dir || !ctx.selfId) return
   let costUsd: number | null = null
   let contextPct: number | null = null
+  const now = Date.now()
   try {
     const u = await $.session.usage()
     costUsd = u.cost?.usd ?? null
     contextPct = u.context.percent ?? null
+    trackLimits(u.rateLimits, now)
   } catch {}
-  const row: SessionRow = { ...me, costUsd, contextPct, updatedAt: Date.now() }
+  for (const step of crossedSteps(ctx.lastContextPct, contextPct)) {
+    note($, { at: now, tone: step >= 90 ? 'bad' : 'warn', text: `this session's context is at ${step}%${step >= 75 ? ': /compact soon' : ''}` }, step >= 75)
+  }
+  if (contextPct !== null) ctx.lastContextPct = contextPct
+  for (const [file, at] of ctx.edits) if (now - at > EDIT_WINDOW_MS) ctx.edits.delete(file)
+  me.editing = [...ctx.edits.keys()]
+  const row: SessionRow = { ...me, costUsd, contextPct, updatedAt: now }
   await $.fs.write(`${ctx.dir}/${ctx.selfId}.json`, JSON.stringify(row)).catch(() => undefined)
 }
 
@@ -109,6 +180,8 @@ type RegistryEntry = {
   cwd: string
   startedAt: number
   name?: string
+  nameSource?: string
+  waitingFor?: string
   entrypoint?: string
   status?: string
   statusUpdatedAt?: number
@@ -126,6 +199,59 @@ const appOf = (entrypoint: string | undefined) =>
   !entrypoint ? '' : entrypoint === 'claude-desktop' ? 'desktop' : entrypoint === 'cli' ? 'cli' : entrypoint.replace(/^claude-/, '')
 
 const gitCache = new Map<string, { at: number; repo: string; branch: string }>()
+
+// A readable name for sessions whose registry name is only derived from their
+// folder ("2025-2a"): the AI title Claude Code writes into the transcript, else
+// the last prompt. Only those two record types are kept; the rest is dropped.
+const titleCache = new Map<string, { at: number; title: string }>()
+const TITLE_TTL_MS = 60_000
+const READ_LIMIT = 4 * 1024 * 1024 - 64 * 1024
+
+const titleIn = (text: string) => {
+  let title = ''
+  let prompt = ''
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.includes('-title"') && !line.includes('"last-prompt"')) continue
+    try {
+      const d = JSON.parse(line) as { type?: string; aiTitle?: string; customTitle?: string; lastPrompt?: string }
+      if (d.type === 'custom-title' && d.customTitle) title = d.customTitle
+      else if (d.type === 'ai-title' && d.aiTitle) title = d.aiTitle
+      else if (d.type === 'last-prompt' && d.lastPrompt) prompt = d.lastPrompt
+    } catch {}
+  }
+  const tidy = (s: string) => s.replace(/\s+/g, ' ').trim()
+
+  return title ? tidy(title) : prompt ? `“${cut(tidy(prompt), 48)}”` : ''
+}
+
+async function titleOf($: Engine, reg: RegistryEntry): Promise<string> {
+  const hit = titleCache.get(reg.sessionId)
+  if (hit && Date.now() - hit.at < TITLE_TTL_MS) return hit.title
+  const path = `${ctx.projectsDir}/${reg.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${reg.sessionId}.jsonl`
+  let title = ''
+  try {
+    const stat = await $.fs.stat(path)
+    if (stat.size <= READ_LIMIT) {
+      title = titleIn(await $.fs.read(path))
+    } else {
+      for (const argv of [
+        ['grep', '-a', '-F', '-e', '-title"', '-e', '"last-prompt"', path],
+        ['findstr', '/L', 'ai-title custom-title last-prompt', path],
+      ]) {
+        try {
+          const r = await $.process.run(argv, { timeoutMs: 10_000 })
+          if (r.exitCode === 0) {
+            title = titleIn(r.stdout)
+            break
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  titleCache.set(reg.sessionId, { at: Date.now(), title })
+
+  return title
+}
 
 async function livePids($: Engine): Promise<Set<number> | null> {
   try {
@@ -192,9 +318,12 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
     seen.add(reg.sessionId)
     const beat = beats.get(reg.sessionId)
     const where = beat?.branch ? { repo: beat.repo, branch: beat.branch } : await whereIs($, reg.cwd)
+    const isDerived = !reg.name || reg.nameSource === 'derived'
+    const name = (isDerived ? await titleOf($, reg) : '') || reg.name || ''
     rows.push({
       id: reg.sessionId,
-      name: reg.name ?? '',
+      name,
+      waitingFor: reg.status === 'waiting' || beat?.state === 'waiting' ? (reg.waitingFor ?? '') : '',
       app: appOf(reg.entrypoint),
       hasPlugin: beat !== undefined,
       cwd: reg.cwd,
@@ -207,6 +336,8 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
       costUsd: beat?.costUsd ?? null,
       contextPct: beat?.contextPct ?? null,
       updatedAt: beat?.updatedAt ?? reg.updatedAt ?? reg.startedAt,
+      stuck: beat?.stuck ?? '',
+      editing: beat?.editing ?? [],
     })
   }
   for (const beat of beats.values()) {
@@ -217,16 +348,92 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
   return rows.sort((a, b) => order[a.state] - order[b.state] || b.startedAt - a.startedAt)
 }
 
+// ---------------------------------------------------------------------------
+// Monitoring: limits, events and alerts
+// ---------------------------------------------------------------------------
+function trackLimits(readings: ReadonlyArray<{ kind: string; percentUsed: number; resetsAt?: string }>, now: number) {
+  ctx.limits = readings.map(r => {
+    const kept = [...(ctx.limitSamples.get(r.kind) ?? []), { at: now, pct: r.percentUsed }].filter(s => now - s.at <= LIMIT_WINDOW_MS)
+    // A reset drops the percentage: start the pace over from there.
+    const resetAt = kept.findLastIndex((s, i) => i > 0 && s.pct < kept[i - 1].pct)
+    const fromReset = resetAt > 0 ? kept.slice(resetAt) : kept
+    ctx.limitSamples.set(r.kind, fromReset)
+    const resetsAt = r.resetsAt ? Date.parse(r.resetsAt) : NaN
+    return { kind: limitLabel(r.kind), pct: r.percentUsed, resetsAt: Number.isFinite(resetsAt) ? resetsAt : null, etaMs: runwayMs(fromReset) }
+  })
+}
+
+function note($: Engine, event: EventRow, isAlert: boolean) {
+  ctx.events = [event, ...ctx.events].slice(0, EVENTS_KEPT)
+  if (isAlert && ctx.alertsOn) $.ui.toast(event.text, { timeoutMs: 6000 })
+}
+
+// ---------------------------------------------------------------------------
+// Agents: every live session's subagents, from the transcripts Claude Code keeps
+// (<projects>/<slug>/<session>/subagents/agent-<id>.jsonl and .meta.json).
+// ---------------------------------------------------------------------------
+const agentCache = new Map<string, { stamp: string; sum: AgentSummary; meta: AgentMeta }>()
+
+async function readAgents($: Engine, sessions: readonly SessionRow[]): Promise<AgentRow[]> {
+  const now = Date.now()
+  const rows: AgentRow[] = []
+  for (const s of sessions) {
+    const dir = `${ctx.projectsDir}/${slugOf(s.cwd)}/${s.id}/subagents`
+    const entries = await $.fs.list(dir).catch(() => [])
+    const byName = new Map(entries.map(f => [f.name, f] as const))
+    for (const f of entries) {
+      const m = /^agent-(.+)\.jsonl$/.exec(f.name)
+      if (!m || f.kind !== 'file') continue
+      const id = m[1]
+      const metaFile = byName.get(`agent-${id}.meta.json`)
+      const lastActive = Math.max(f.mtimeMs, metaFile?.mtimeMs ?? 0)
+      const stamp = `${f.mtimeMs}:${f.size}:${metaFile?.mtimeMs ?? 0}`
+      let hit = agentCache.get(`${s.id}/${id}`)
+      if (!hit || hit.stamp !== stamp) {
+        let meta: AgentMeta = {}
+        let sum: AgentSummary = { startedAt: null, steps: 0, doing: '', isFinished: false }
+        try {
+          if (metaFile) meta = JSON.parse(await $.fs.read(`${dir}/${metaFile.name}`)) as AgentMeta
+        } catch {}
+        try {
+          if (f.size <= READ_LIMIT) sum = summarizeAgent(await $.fs.read(`${dir}/${f.name}`))
+        } catch {}
+        hit = { stamp, sum, meta }
+        agentCache.set(`${s.id}/${id}`, hit)
+      }
+      const state = agentStateOf(hit.meta, hit.sum, lastActive, now, true)
+      if ((state === 'done' || state === 'stopped') && now - lastActive > AGENT_RECENT_MS) continue
+      rows.push({
+        id,
+        sessionId: s.id,
+        sessionName: s.name || s.repo,
+        type: hit.meta.agentType ?? 'agent',
+        description: hit.meta.description || 'subagent',
+        state,
+        isBackground: hit.meta.requestShape === 'background',
+        startedAt: hit.sum.startedAt ?? lastActive,
+        lastActive,
+        doing: hit.sum.doing,
+        steps: hit.sum.steps,
+      })
+    }
+  }
+  const order = { working: 0, quiet: 1, done: 2, stopped: 3 } as const
+
+  return rows.sort((a, b) => order[a.state] - order[b.state] || b.lastActive - a.lastActive)
+}
+
 async function readGit($: Engine): Promise<GitInfo | null> {
   const branch = (await git($, ['rev-parse', '--abbrev-ref', 'HEAD']))?.trim()
   if (!branch) return null
-  const [status, counts, stash, head, refs, wt] = await Promise.all([
+  const [status, counts, stash, head, refs, wt, diff] = await Promise.all([
     git($, ['status', '--porcelain']),
     git($, ['rev-list', '--left-right', '--count', '@{u}...HEAD']),
     git($, ['stash', 'list']),
     git($, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']),
     git($, ['for-each-ref', '--sort=-committerdate', '--count=8', '--format=%(refname:short)|%(committerdate:relative)', 'refs/heads']),
     git($, ['worktree', 'list', '--porcelain']),
+    git($, ['diff', '--shortstat', 'HEAD']),
   ])
   const [behind, ahead] = counts ? counts.trim().split(/\s+/).map(Number) : [0, 0]
   const baseRef = head?.trim().replace(/^origin\//, '') || 'main'
@@ -253,24 +460,33 @@ async function readGit($: Engine): Promise<GitInfo | null> {
     base: baseRef,
     branches,
     worktrees,
+    ...parseShortstat(diff ?? ''),
   }
 }
 
 async function readPrs($: Engine): Promise<PrInfo> {
-  const fields = 'number,title,author,createdAt,reviewDecision,statusCheckRollup,mergeable'
-  const gh = async (extra: string[]) => {
-    const r = await $.process.run(['gh', 'pr', 'list', '--state', 'open', '--limit', '20', '--json', fields, ...extra], {
-      timeoutMs: 20_000,
-    })
-    if (r.exitCode !== 0) throw new Error(lines(r.stderr)[0] ?? 'gh failed')
-    return JSON.parse(r.stdout) as GhPr[]
-  }
   try {
-    const [mine, toReview] = await Promise.all([gh(['--author', '@me']), gh(['--search', 'review-requested:@me'])])
+    const r = await $.process.run(
+      [
+        'gh',
+        'api',
+        'graphql',
+        '-f',
+        `query=${PR_QUERY}`,
+        '-f',
+        'mine=is:pr is:open author:@me archived:false',
+        '-f',
+        'review=is:pr is:open review-requested:@me archived:false',
+      ],
+      { timeoutMs: 20_000 },
+    )
+    if (r.exitCode !== 0) throw new Error(lines(r.stderr)[0] ?? 'gh failed')
+    const data = (JSON.parse(r.stdout) as { data?: { mine?: { nodes?: GhPr[] }; review?: { nodes?: GhPr[] } } }).data
+    const keep = (nodes: GhPr[] | undefined) => (nodes ?? []).filter(p => typeof p.number === 'number').map(toRow)
     return {
       error: null,
-      mine: mine.map(toRow),
-      toReview: toReview.map(toRow).sort((a, b) => b.ageDays - a.ageDays),
+      mine: keep(data?.mine?.nodes),
+      toReview: keep(data?.review?.nodes).sort((a, b) => b.ageDays - a.ageDays),
       fetchedAt: Date.now(),
     }
   } catch (err) {
@@ -282,12 +498,25 @@ async function readPrs($: Engine): Promise<PrInfo> {
   }
 }
 
-async function publish($: Engine, gitInfo: GitInfo | null | undefined) {
+async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
   const sessions = await readSessions($)
+  const agents = await readAgents($, sessions)
+  if (sample) await update($, activity, h => pushActivity(h, sessions))
+  const now = Date.now()
+  const mine = ctx.prs && !ctx.prs.error ? ctx.prs.mine : null
+  for (const c of changesBetween(ctx.seen, sessions, agents, mine, ctx.selfId, now, ctx.isFirstLook)) {
+    note($, { at: c.at, tone: c.tone, text: c.text }, c.isAlert)
+  }
+  ctx.seen = remember(sessions, agents, mine)
+  ctx.isFirstLook = false
   await update($, snap, s => {
     const next: Snapshot = {
       selfId: ctx.selfId,
       sessions,
+      agents,
+      limits: ctx.limits,
+      events: ctx.events,
+      alertsOn: ctx.alertsOn,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       updatedAt: Date.now(),
@@ -309,7 +538,7 @@ async function tick($: Engine, withPrs: boolean) {
   if (g) me.branch = g.branch
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
-  await publish($, g)
+  await publish($, g, true)
 }
 
 export const register: Register = on => {
@@ -320,6 +549,7 @@ export const register: Register = on => {
     const config = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
     ctx.dir = `${config}/dev-dash/sessions`
     ctx.registryDir = `${config}/sessions`
+    ctx.projectsDir = `${config}/projects`
     me.id = ctx.selfId
     me.cwd = await $.session.cwd()
     const top = (await git($, ['rev-parse', '--show-toplevel']))?.trim()
@@ -330,6 +560,9 @@ export const register: Register = on => {
 
     await $.command.register({ name: 'dash', description: 'Open the developer dashboard pane' })
     await $.command.register({ name: 'dash-hide', description: 'Hide the developer dashboard pane' })
+    await $.command.register({ name: 'dash-alerts', description: 'Turn dashboard toasts on or off (on | off, or toggle)' })
+    const stored = await $.store.get('alertsOn').catch(() => undefined)
+    if (typeof stored === 'boolean') ctx.alertsOn = stored
     await tick($, false)
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1
@@ -367,7 +600,8 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    me.lastTool = e.tool
+    const input = e as unknown as Record<string, unknown>
+    me.lastTool = stepLabel(e.tool, input)
     if (e.tool === 'AskUserQuestion') {
       await setState($, 'waiting')
       const r = await next(e)
@@ -375,8 +609,30 @@ export const register: Register = on => {
       return r
     }
     await setState($, 'running')
+    if (['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) {
+      const file = input.file_path ?? input.notebook_path
+      if (typeof file === 'string') ctx.edits.set(normPath(file), Date.now())
+    }
 
-    return next(e)
+    let isOk = false
+    try {
+      const ran = await next(e)
+      const shape = ran as { deny?: string; isError?: boolean; result?: { interrupted?: boolean } }
+      isOk = !shape.deny && !shape.isError && !shape.result?.interrupted
+      return ran
+    } finally {
+      ctx.calls = [...ctx.calls, { key: callKey(e.tool, input), label: stepLabel(e.tool, input), isOk, at: Date.now() }].slice(-20)
+      me.stuck = stuckReason(ctx.calls)
+    }
+  })
+
+  on('command.run', { command: 'dash-alerts' }, async ($, e) => {
+    const arg = (e.args ?? '').trim().toLowerCase()
+    ctx.alertsOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.alertsOn
+    await $.store.set('alertsOn', ctx.alertsOn)
+    await publish($, undefined)
+
+    return { text: `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.` }
   })
 
   on('command.run', { command: 'dash' }, async $ => {
@@ -394,143 +650,10 @@ export const register: Register = on => {
     return { text: 'Dashboard hidden.' }
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const s = await read($, snap)
-    const now = Date.now()
-    const width = Math.max(30, (e.viewport?.columns ?? 60) - 2)
-
-    if (!s) {
-      return <Text dimColor>Collecting…</Text>
-    }
-
-    const waiting = s.sessions.filter(r => r.state === 'waiting')
-    const failing = (s.prs?.mine ?? []).filter(p => p.ci === 'failing' || p.conflicts)
-    const reviews = s.prs?.toReview ?? []
-    const needsYou = waiting.length + failing.length + reviews.length
-    const stateColor = { running: 'green', idle: 'gray', waiting: 'yellow', ended: 'gray' } as const
-    const ciColor = { passing: 'green', failing: 'red', pending: 'yellow', none: 'gray' } as const
-    const g = s.git
-    const sessionByCwd = new Map(s.sessions.map(r => [norm(r.cwd), r] as const))
-
-    return (
-      <Box flexDirection="column">
-        <Text bold color={needsYou > 0 ? 'yellow' : 'green'}>
-          ▍Attention {needsYou > 0 ? `(${needsYou})` : '- all clear'}
-        </Text>
-        {waiting.map(r => (
-          <Text color="yellow">
-            {'  '}⏸ {cut(`${r.repo}@${r.branch}`, width - 22)} waiting {ago(now - r.stateSince)}
-          </Text>
-        ))}
-        {failing.map(p => (
-          <Text color="red">
-            {'  '}✗ #{p.number} {p.conflicts ? 'conflicts' : 'CI failing'} · {cut(p.title, width - 26)}
-          </Text>
-        ))}
-        {reviews.slice(0, 5).map(p => (
-          <Text color="cyan">
-            {'  '}◎ review #{p.number} @{p.author} {p.ageDays}d · {cut(p.title, width - 32)}
-          </Text>
-        ))}
-        <Text> </Text>
-
-        <Text bold>▍Sessions ({s.sessions.length})</Text>
-        {s.sessions.length === 0 && <Text dimColor>{'  '}none</Text>}
-        {s.sessions.map(r => (
-          <Box flexDirection="column">
-            <Text color={stateColor[r.state]}>
-              {'  '}
-              {r.state === 'running' ? '●' : r.state === 'waiting' ? '⏸' : '○'}{' '}
-              {cut(r.branch ? `${r.repo}@${r.branch}` : r.repo, width - 24)}
-              {r.id === s.selfId ? ' (this)' : ''} · {r.state} {ago(now - r.stateSince)}
-            </Text>
-            <Text dimColor>
-              {'    '}
-              {[
-                r.name,
-                r.app,
-                `up ${ago(now - r.startedAt)}`,
-                r.costUsd !== null ? `$${r.costUsd.toFixed(2)}` : '',
-                r.contextPct !== null ? `ctx ${Math.round(r.contextPct)}%` : '',
-                r.lastTool,
-                r.hasPlugin ? '' : 'no plugin: cost/ctx n/a',
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-              {r.contextPct !== null && r.contextPct >= 80 ? ' ⚠ near compaction' : ''}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-
-        <Text bold>▍Work in flight</Text>
-        {!g && <Text dimColor>{'  '}not a git repository</Text>}
-        {g && (
-          <Box flexDirection="column">
-            <Text>
-              {'  '}
-              {g.branch}
-              {g.upstream ? ` ↑${g.ahead} ↓${g.behind}` : ' (no upstream)'} · {g.dirty} uncommitted
-              {g.stashes > 0 ? ` · ${g.stashes} stashed` : ''}
-            </Text>
-            {g.branches
-              .filter(b => b.name !== g.branch)
-              .slice(0, 6)
-              .map(b => (
-                <Text dimColor={!b.isMerged} color={b.isMerged ? 'magenta' : undefined}>
-                  {'    '}
-                  {cut(b.name, width - 28)} · {b.age}
-                  {b.isMerged ? ` · merged into ${g.base}` : ''}
-                </Text>
-              ))}
-            {g.worktrees.length > 1 && <Text dimColor>{'  '}worktrees:</Text>}
-            {g.worktrees.length > 1 &&
-              g.worktrees.map(w => {
-                const used = sessionByCwd.get(norm(w.path))
-                const who = used ? (used.id === s.selfId ? 'this session' : `session ${used.id.slice(0, 8)}`) : ''
-                return (
-                  <Text dimColor>
-                    {'    '}
-                    {cut(base(w.path), 20)} [{w.branch}]{who ? ` ← ${who}` : ''}
-                  </Text>
-                )
-              })}
-          </Box>
-        )}
-        <Text> </Text>
-
-        <Text bold>▍PRs & CI</Text>
-        {!s.prs && <Text dimColor>{'  '}loading…</Text>}
-        {s.prs?.error && <Text color="yellow">{'  '}{s.prs.error}</Text>}
-        {s.prs && !s.prs.error && (
-          <Box flexDirection="column">
-            <Text dimColor>{'  '}mine ({s.prs.mine.length})</Text>
-            {s.prs.mine.map(p => (
-              <Text>
-                {'    '}#{p.number} <Text color={ciColor[p.ci]}>{p.ci}</Text> · {p.review} · {p.ageDays}d
-                {p.conflicts ? ' · conflicts' : ''} · {cut(p.title, width - 42)}
-              </Text>
-            ))}
-            <Text dimColor>{'  '}to review ({s.prs.toReview.length})</Text>
-            {s.prs.toReview.map(p => (
-              <Text>
-                {'    '}#{p.number} @{p.author} · {p.ageDays}d · {cut(p.title, width - 32)}
-              </Text>
-            ))}
-            <Text dimColor>{'  '}updated {ago(now - s.prs.fetchedAt)} ago</Text>
-          </Box>
-        )}
-        <Text> </Text>
-        <Button
-          key="hide"
-          label="Hide dashboard"
-          onPress={async () => {
-            ctx.isOpen = false
-            await $.ui.close({ id: PANE })
-          }}
-        />
-      </Box>
-    )
+  // The drawing lives in ./render.tsx (drop-in replacement for the old inline hook).
+  registerDashPane(on, {
+    onHide: () => {
+      ctx.isOpen = false
+    },
   })
 }

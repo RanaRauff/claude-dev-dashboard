@@ -1,0 +1,628 @@
+// dev-dash: the Pane's drawing. A drop-in for register.tsx's `ui.render` hook.
+//
+// Wiring (see design.md, "Dropping it in"):
+//   import { registerDashPane, pushActivity, activity } from './render'
+//   registerDashPane(on, { onHide: () => { ctx.isOpen = false } })   // replaces the old on('ui.render', ...)
+//   // optional, feeds the header sparkline; outside any render hook:
+//   await update($, activity, h => pushActivity(h, sessions))
+//
+// Only elements from `$.ui.resolve(e)` (Box, Text, Button), JSX on `h`, no DOM/Node.
+// Width comes from the Pane's `e.props.bodyColumns` (the box inside the frame),
+// then `e.viewport.columns`, then 60.
+
+import { atom, read, update } from 'claude-code'
+import type { On } from 'claude-code'
+
+import type { AgentRow, AgentState, CiState, DashSection, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
+import { collisionsOf } from './monitor'
+
+export const PANE = 'dev-dash'
+
+export const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
+export const collapsed = atom({ plugin: 'dev-dash', key: 'collapsed' } as const, [])
+export const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
+
+// ---------------------------------------------------------------------------
+// Palette: semantic roles on the 8 ANSI names, which every terminal theme
+// (dark or light) remaps to readable values. No hex: a fixed hex that reads on
+// black can vanish on white. Swap the right-hand side to retheme.
+// ---------------------------------------------------------------------------
+export const TONE = {
+  ok: 'green',
+  warn: 'yellow',
+  bad: 'red',
+  info: 'cyan',
+  accent: 'magenta',
+  mute: 'gray',
+} as const
+
+const STATE_TONE: Record<SessionState, string> = { running: TONE.ok, waiting: TONE.warn, idle: TONE.mute, ended: TONE.mute }
+const STATE_BADGE: Record<SessionState, string> = { running: ' RUN  ', waiting: ' WAIT ', idle: ' IDLE ', ended: ' END  ' }
+
+// ---------------------------------------------------------------------------
+// Pure helpers (no $, safe to unit test)
+// ---------------------------------------------------------------------------
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** Cut to at most `n` cells with a trailing ellipsis. */
+export const cut = (s: string, n: number) => (n <= 0 ? '' : s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s)
+
+/** Compact age: 42s, 7m, 3h05, 2d. */
+export const ago = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  if (s < 86400) return `${Math.floor(s / 3600)}h${pad2(Math.floor((s % 3600) / 60))}`
+  return `${Math.floor(s / 86400)}d`
+}
+
+export const money = (n: number) => `$${n.toFixed(2)}`
+
+/** Segmented meter: bar(62, 5) === '▰▰▰▱▱'. */
+export const bar = (pct: number, cells: number) => {
+  const on = Math.round((clamp(pct, 0, 100) / 100) * cells)
+  return '▰'.repeat(on) + '▱'.repeat(Math.max(0, cells - on))
+}
+
+const SPARK = '▁▂▃▄▅▆▇█'
+/** Last `width` samples as block glyphs, scaled to the window's max (min scale 1). */
+export const sparkline = (values: readonly number[], width: number) => {
+  const v = values.slice(-Math.max(0, width))
+  if (v.length === 0) return ''
+  const max = Math.max(1, ...v)
+  return v.map(x => SPARK[clamp(Math.round((x / max) * 7), 0, 7)]).join('')
+}
+
+/** One activity sample per tick: sessions that are running or waiting. Keeps the last `keep`. */
+export const pushActivity = (history: readonly number[] | undefined, sessions: readonly SessionRow[], keep = 48) =>
+  [...(history ?? []), sessions.filter(r => r.state === 'running' || r.state === 'waiting').length].slice(-keep)
+
+export const ctxTone = (pct: number) => (pct >= 80 ? TONE.bad : pct >= 60 ? TONE.warn : TONE.ok)
+
+/** Responsive metrics for a body `cols` wide. Narrow below 60. */
+export const layoutFor = (cols: number | undefined) => {
+  const W = clamp(Math.floor(cols ?? 60), 30, 140)
+  const isNarrow = W < 60
+  return {
+    W,
+    isNarrow,
+    barCells: isNarrow ? 5 : 10,
+    sparkCells: clamp(W - 26, 8, 32),
+    branchRows: isNarrow ? 4 : 6,
+    sessionRows: isNarrow ? 6 : 10,
+  }
+}
+
+const where = (r: SessionRow) => (r.branch ? `${r.repo}@${r.branch}` : r.repo)
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+const toggle = (list: readonly DashSection[] | undefined, id: DashSection) =>
+  (list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]
+
+/** What the Attention section counts, in urgency order. */
+export const attentionOf = (s: Snapshot) => {
+  const waiting = s.sessions.filter(r => r.state === 'waiting')
+  const stuck = s.sessions.filter(r => r.stuck)
+  const collisions = collisionsOf(s.sessions)
+  const limits = (s.limits ?? []).filter(l => l.pct >= 90 || isLimitAtRisk(l, Date.now()))
+  const failing = (s.prs?.mine ?? []).filter(p => p.ci === 'failing' || p.conflicts)
+  const reviews = s.prs?.toReview ?? []
+  const urgent = waiting.length + stuck.length + collisions.length + limits.length + failing.length
+  return { waiting, stuck, collisions, limits, failing, reviews, urgent, total: urgent + reviews.length }
+}
+
+// ---------------------------------------------------------------------------
+// Monitoring helpers
+// ---------------------------------------------------------------------------
+/** True when the limit will run out before it resets, at the recent pace. */
+export const isLimitAtRisk = (l: LimitRow, now: number) =>
+  l.etaMs !== null && (l.resetsAt === null || now + l.etaMs < l.resetsAt)
+
+export const limitTone = (l: LimitRow, now: number) =>
+  l.pct >= 90 || isLimitAtRisk(l, now) ? TONE.bad : l.pct >= 70 ? TONE.warn : TONE.ok
+
+export const limitNote = (l: LimitRow, now: number) => {
+  const resets = l.resetsAt !== null ? `resets in ${ago(l.resetsAt - now)}` : ''
+  if (isLimitAtRisk(l, now)) return `out in ~${ago(l.etaMs ?? 0)} at this pace${resets ? ` · ${resets}` : ''}`
+  return resets || 'no reset time'
+}
+
+const AGENT_LOOK: Record<AgentState, { glyph: string; tone: string; word: string }> = {
+  working: { glyph: '◐', tone: TONE.ok, word: 'working' },
+  quiet: { glyph: '◌', tone: TONE.warn, word: 'quiet' },
+  done: { glyph: '✓', tone: TONE.mute, word: 'done' },
+  stopped: { glyph: '■', tone: TONE.mute, word: 'stopped' },
+}
+
+/** A spinner frame for working agents, advancing every sync. */
+const SPIN = '◐◓◑◒'
+export const spinFrame = (at: number) => SPIN[Math.floor(at / 5000) % SPIN.length]
+
+const EVENT_TONE: Record<EventRow['tone'], string> = { ok: TONE.ok, warn: TONE.warn, bad: TONE.bad, info: TONE.info }
+const EVENT_GLYPH: Record<EventRow['tone'], string> = { ok: '✓', warn: '◆', bad: '✗', info: '·' }
+
+export const clockOf = (at: number) => {
+  const d = new Date(at)
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+const CI: Record<CiState, { glyph: string; tone: string; inverse: boolean }> = {
+  failing: { glyph: ' ✗ CI ', tone: TONE.bad, inverse: true },
+  pending: { glyph: '◌ CI', tone: TONE.warn, inverse: false },
+  passing: { glyph: '✓ CI', tone: TONE.ok, inverse: false },
+  none: { glyph: '· no CI', tone: TONE.mute, inverse: false },
+}
+
+const reviewChip = (p: PrRow): { text: string; tone: string } => {
+  if (p.review === 'approved') return { text: '✓ approved', tone: TONE.ok }
+  if (p.review.startsWith('changes')) return { text: '± changes', tone: TONE.bad }
+  if (p.review.includes('required')) return { text: '… review', tone: TONE.warn }
+  return { text: 'no review', tone: TONE.mute }
+}
+
+// ---------------------------------------------------------------------------
+// The hook
+// ---------------------------------------------------------------------------
+export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const s = await read($, snap)
+    const folded = (await read($, collapsed)) ?? []
+    const samples = (await read($, activity)) ?? []
+    const L = layoutFor(e.props.bodyColumns ?? (e.viewport ? e.viewport.columns - 2 : undefined))
+    const { W, isNarrow } = L
+    const now = Date.now()
+
+    const rule = (used: number) => '─'.repeat(clamp(W - used, 0, W))
+
+    // A section heading: `1: ▾ Title ─────────`, or, folded, `1: ▸ Title  summary`.
+    // The plain Button with a hotkey is the fold control (pressable while the pane holds the keys).
+    const Heading = (p: { id: DashSection; hotkey: string; title: string; tone?: string; summary: string }) => {
+      const isOpen = !folded.includes(p.id)
+      return (
+        <Box flexDirection="row" marginTop={1}>
+          <Button
+            key={`fold-${p.id}`}
+            plain
+            hotkey={p.hotkey}
+            label={isOpen ? '▾' : '▸'}
+            onPress={() => update($, collapsed, list => toggle(list, p.id))}
+          />
+          <Text bold color={p.tone}> {p.title} </Text>
+          {isOpen ? (
+            <Text dimColor wrap="truncate-end">{rule(p.title.length + 6)}</Text>
+          ) : (
+            <Text dimColor wrap="truncate-end">{cut(p.summary, W - p.title.length - 7)}</Text>
+          )}
+        </Box>
+      )
+    }
+
+    if (!s) {
+      return (
+        <Box flexDirection="column">
+          <Box borderStyle="round" borderColor={TONE.mute} paddingX={1} width={W}>
+            <Text dimColor>Collecting… first sync takes a few seconds</Text>
+          </Box>
+        </Box>
+      )
+    }
+
+    const att = attentionOf(s)
+    const g = s.git
+    const costs = s.sessions.map(r => r.costUsd).filter((c): c is number => c !== null)
+    const cost = costs.length ? costs.reduce((a, b) => a + b, 0) : null
+    const live = s.sessions.filter(r => r.state === 'running').length
+    const headTone = att.urgent > 0 ? TONE.warn : att.total > 0 ? TONE.info : TONE.ok
+    const agents = s.agents ?? []
+    const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
+    const limits = s.limits ?? []
+    const spark = sparkline(samples, L.sparkCells)
+
+    // ---- header card ------------------------------------------------------
+    const header = (
+      <Box borderStyle="round" borderColor={headTone} paddingX={1} flexDirection="column" width={W}>
+        <Box flexDirection="row" flexWrap="wrap">
+          <Text bold color={headTone}>{att.total > 0 ? `◆ ${att.total} need${att.total === 1 ? 's' : ''} you` : '✓ all clear'}</Text>
+          <Text dimColor> · {plural(s.sessions.length, isNarrow ? 'sess' : 'session', isNarrow ? 'sess' : 'sessions')}</Text>
+          {live > 0 && <Text color={TONE.ok}> · {live} live</Text>}
+          {busyAgents.length > 0 && (
+            <Text color={TONE.accent}> · {plural(busyAgents.length, 'agent')}</Text>
+          )}
+          {cost !== null && <Text dimColor> · {money(cost)}</Text>}
+        </Box>
+        {limits.length > 0 && (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {limits.map(l => (
+              <Text color={limitTone(l, now)}>
+                {l.kind} {bar(l.pct, isNarrow ? 5 : 8)} {Math.round(l.pct)}%
+              </Text>
+            ))}
+          </Box>
+        )}
+        <Box flexDirection="row">
+          {spark && <Text color={TONE.info}>{spark} </Text>}
+          <Text dimColor wrap="truncate-end">{spark ? 'activity · ' : ''}synced {ago(now - s.updatedAt)} ago</Text>
+        </Box>
+      </Box>
+    )
+
+    // ---- Attention ----------------------------------------------------------
+    const attention = (
+      <Box flexDirection="column">
+        <Heading
+          id="attention"
+          hotkey="1"
+          title={att.total > 0 ? `Attention (${att.total})` : 'Attention'}
+          tone={att.total > 0 ? headTone : TONE.ok}
+          summary={
+            att.total > 0
+              ? [
+                  att.waiting.length ? `${att.waiting.length} waiting` : '',
+                  att.stuck.length ? `${att.stuck.length} stuck` : '',
+                  att.collisions.length ? `${att.collisions.length} clash` : '',
+                  att.limits.length ? 'limit' : '',
+                  att.failing.length ? `${att.failing.length} failing` : '',
+                  att.reviews.length ? `${att.reviews.length} review` : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : 'all clear'
+          }
+        />
+        {!folded.includes('attention') && (
+          <Box flexDirection="column" paddingLeft={2}>
+            {att.total === 0 && <Text color={TONE.ok}>✓ Nothing needs you.</Text>}
+            {att.total === 0 && (
+              <Text dimColor wrap="truncate-end">
+                {s.sessions.length === 0 ? 'No live sessions.' : `${plural(live, 'session')} working, the rest idle.`}
+              </Text>
+            )}
+            {att.waiting.map(r => (
+              <Text color={TONE.warn} wrap="truncate-end">
+                ◆ {cut(r.name || where(r), W - 22)} · {r.waitingFor || 'waiting'} {ago(now - r.stateSince)}
+              </Text>
+            ))}
+            {att.stuck.map(r => (
+              <Text color={TONE.bad} wrap="truncate-end">
+                ⟳ {cut(r.name || where(r), W - 30)} may be stuck · {r.stuck}
+              </Text>
+            ))}
+            {att.collisions.map(c => (
+              <Text color={TONE.bad} wrap="truncate-end">
+                ⚠ {cut(c.file.split('/').pop() ?? c.file, 28)} edited by {c.sessions.join(' + ')}
+              </Text>
+            ))}
+            {att.limits.map(l => (
+              <Text color={TONE.bad} wrap="truncate-end">
+                ▲ {l.kind} limit {Math.round(l.pct)}% · {limitNote(l, now)}
+              </Text>
+            ))}
+            {att.failing.map(p => (
+              <Text color={TONE.bad} wrap="truncate-end">
+                ✗ #{p.number} {p.conflicts ? 'conflicts' : 'CI failing'} · {p.repo ? `${p.repo} · ` : ''}{cut(p.title, W - 26 - p.repo.length)}
+              </Text>
+            ))}
+            {att.reviews.slice(0, isNarrow ? 3 : 5).map(p => (
+              <Text color={TONE.info} wrap="truncate-end">
+                ◎ review #{p.number} @{p.author} · {p.repo ? `${p.repo} · ` : ''}{p.ageDays}d · {cut(p.title, W - 32 - p.author.length - p.repo.length)}
+              </Text>
+            ))}
+            {att.reviews.length > (isNarrow ? 3 : 5) && (
+              <Text dimColor>+{att.reviews.length - (isNarrow ? 3 : 5)} more reviews</Text>
+            )}
+          </Box>
+        )}
+      </Box>
+    )
+
+    // ---- Sessions -------------------------------------------------------------
+    const sessionRow = (r: SessionRow) => {
+      const isSelf = r.id === s.selfId
+      const label = r.name || where(r)
+      const head = `${cut(label, W - 26)}${isSelf ? ' (this)' : ''} · ${r.state === 'waiting' && r.waitingFor ? r.waitingFor : r.state} ${ago(now - r.stateSince)}`
+      const up = `up ${ago(now - r.startedAt)}`
+      const usage = [r.contextPct !== null ? `ctx ${Math.round(r.contextPct)}%` : '', r.costUsd !== null ? money(r.costUsd) : '', r.lastTool]
+      const who = [r.name ? where(r) : '', r.app, r.hasPlugin ? '' : 'no plugin', up]
+      const join = (xs: string[]) => xs.filter(Boolean).join(' · ')
+      const hasCtx = r.contextPct !== null
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text inverse color={STATE_TONE[r.state]}>{STATE_BADGE[r.state]}</Text>
+            <Text bold={isSelf} wrap="truncate-end"> {head}</Text>
+          </Box>
+          {hasCtx ? (
+            <Box flexDirection="row" paddingLeft={7}>
+              <Text color={ctxTone(r.contextPct ?? 0)}>{bar(r.contextPct ?? 0, L.barCells)} </Text>
+              <Text dimColor wrap="truncate-end">{join(isNarrow ? usage : [...usage, ...who])}</Text>
+              {(r.contextPct ?? 0) >= 80 && <Text color={TONE.bad}> compact soon</Text>}
+            </Box>
+          ) : (
+            <Box paddingLeft={7}>
+              <Text dimColor wrap="truncate-end">{join([...who, ...usage])}</Text>
+            </Box>
+          )}
+          {hasCtx && isNarrow && (
+            <Box paddingLeft={7}>
+              <Text dimColor wrap="truncate-end">{join(who)}</Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+    const sessions = (
+      <Box flexDirection="column">
+        <Heading
+          id="sessions"
+          hotkey="2"
+          title={`Sessions (${s.sessions.length})`}
+          summary={`${live} running · ${att.waiting.length} waiting${cost !== null ? ` · ${money(cost)}` : ''}`}
+        />
+        {!folded.includes('sessions') && (
+          <Box flexDirection="column" paddingLeft={2}>
+            {s.sessions.length === 0 && <Text dimColor>No live Claude sessions.</Text>}
+            {s.sessions.slice(0, L.sessionRows).map(sessionRow)}
+            {s.sessions.length > L.sessionRows && <Text dimColor>+{s.sessions.length - L.sessionRows} more</Text>}
+          </Box>
+        )}
+      </Box>
+    )
+
+    // ---- Agents -------------------------------------------------------------------
+    const agentRow = (a: AgentRow) => {
+      const look = AGENT_LOOK[a.state]
+      const isLive = a.state === 'working'
+      const age = isLive || a.state === 'quiet' ? `${ago(now - a.startedAt)}` : `${ago(now - a.lastActive)} ago`
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text color={look.tone} bold={isLive}>{isLive ? spinFrame(now) : look.glyph} </Text>
+            <Text bold={isLive} dimColor={!isLive && a.state !== 'quiet'} wrap="truncate-end">
+              {cut(a.description, W - 22)}
+            </Text>
+            <Text dimColor> · {look.word} {age}</Text>
+          </Box>
+          <Box paddingLeft={2}>
+            <Text dimColor wrap="truncate-end">
+              {[a.type, a.sessionName, a.steps ? plural(a.steps, 'step') : ''].filter(Boolean).join(' · ')}
+            </Text>
+          </Box>
+          {a.doing && (isLive || a.state === 'quiet') && (
+            <Box paddingLeft={2}>
+              <Text color={TONE.info} wrap="truncate-end">↳ {cut(a.doing, W - 6)}</Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+    const agentRows = isNarrow ? 4 : 8
+    const agentsSection = (
+      <Box flexDirection="column">
+        <Heading
+          id="agents"
+          hotkey="3"
+          title={`Agents (${agents.length})`}
+          tone={busyAgents.length > 0 ? TONE.accent : undefined}
+          summary={`${busyAgents.length} working · ${agents.length - busyAgents.length} recent`}
+        />
+        {!folded.includes('agents') && (
+          <Box flexDirection="column" paddingLeft={2}>
+            {agents.length === 0 && <Text dimColor>No subagents in the last 30 minutes.</Text>}
+            {agents.slice(0, agentRows).map(agentRow)}
+            {agents.length > agentRows && <Text dimColor>+{agents.length - agentRows} more</Text>}
+          </Box>
+        )}
+      </Box>
+    )
+
+    // ---- Monitor ------------------------------------------------------------------
+    const withCtx = s.sessions.filter(r => r.contextPct !== null)
+    const events = (s.events ?? []).slice(0, isNarrow ? 5 : 8)
+    const monitor = (
+      <Box flexDirection="column">
+        <Heading
+          id="monitor"
+          hotkey="4"
+          title="Monitor"
+          tone={att.limits.length > 0 ? TONE.bad : undefined}
+          summary={[
+            ...limits.map(l => `${l.kind} ${Math.round(l.pct)}%`),
+            s.events?.length ? `${s.events.length} events` : '',
+            s.alertsOn ? 'alerts on' : 'alerts off',
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        />
+        {!folded.includes('monitor') && (
+          <Box flexDirection="column" paddingLeft={2}>
+            <Text dimColor>usage limits</Text>
+            {limits.length === 0 && (
+              <Text dimColor wrap="wrap">{'  '}not reported yet (shows after the first reply on a Pro/Max plan)</Text>
+            )}
+            {limits.map(l => (
+              <Box flexDirection="row">
+                <Text>{'  '}{l.kind.padEnd(isNarrow ? 3 : 9)} </Text>
+                <Text color={limitTone(l, now)}>{bar(l.pct, L.barCells)} {String(Math.round(l.pct)).padStart(3)}% </Text>
+                <Text dimColor={!isLimitAtRisk(l, now)} color={isLimitAtRisk(l, now) ? TONE.bad : undefined} wrap="truncate-end">
+                  {limitNote(l, now)}
+                </Text>
+              </Box>
+            ))}
+            {withCtx.length > 0 && <Text dimColor>context</Text>}
+            {withCtx.map(r => (
+              <Box flexDirection="row">
+                <Text>{'  '}</Text>
+                <Text color={ctxTone(r.contextPct ?? 0)}>{bar(r.contextPct ?? 0, L.barCells)} {String(Math.round(r.contextPct ?? 0)).padStart(3)}% </Text>
+                <Text dimColor wrap="truncate-end">{cut(r.name || where(r), W - L.barCells - 14)}</Text>
+              </Box>
+            ))}
+            <Box flexDirection="row" marginTop={0}>
+              <Text dimColor>events </Text>
+              <Button
+                key="alerts"
+                plain
+                hotkey="a"
+                label={s.alertsOn ? '🔔 alerts on' : '🔕 alerts off'}
+                dimColor={!s.alertsOn}
+                onPress={() => $.command.run({ command: 'dash-alerts', args: '' })}
+              />
+            </Box>
+            {events.length === 0 && <Text dimColor>{'  '}quiet so far</Text>}
+            {events.map(ev => (
+              <Text color={EVENT_TONE[ev.tone]} wrap="truncate-end">
+                {'  '}
+                <Text dimColor>{clockOf(ev.at)} </Text>
+                {EVENT_GLYPH[ev.tone]} {cut(ev.text, W - 12)}
+              </Text>
+            ))}
+          </Box>
+        )}
+      </Box>
+    )
+
+    // ---- Work in flight -------------------------------------------------------
+    const sessionByCwd = new Map(s.sessions.map(r => [r.cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(), r] as const))
+    const others = g ? g.branches.filter(b => b.name !== g.branch) : []
+    const merged = others.filter(b => b.isMerged)
+    const work = (
+      <Box flexDirection="column">
+        <Heading
+          id="work"
+          hotkey="5"
+          title="Work in flight"
+          summary={g ? `${g.branch} · ${g.dirty} dirty${merged.length ? ` · ${merged.length} merged` : ''}` : 'no repo'}
+        />
+        {!folded.includes('work') && (
+          <Box flexDirection="column" paddingLeft={2}>
+            {!g && <Text dimColor>Not a git repository.</Text>}
+            {g && (
+              <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                <Text bold>{cut(g.branch, W - 6)}</Text>
+                {g.upstream ? (
+                  <Text color={g.behind > 0 ? TONE.warn : undefined} dimColor={g.ahead + g.behind === 0}>↑{g.ahead} ↓{g.behind}</Text>
+                ) : (
+                  <Text dimColor>no upstream</Text>
+                )}
+                {g.dirty > 0 ? <Text color={TONE.warn}>● {g.dirty} uncommitted</Text> : <Text color={TONE.ok}>✓ clean</Text>}
+                {g.stashes > 0 && <Text dimColor>≡ {plural(g.stashes, 'stash', 'stashes')}</Text>}
+                {(g.added ?? 0) + (g.removed ?? 0) > 0 && (
+                  <Text>
+                    <Text color={TONE.ok}>+{g.added}</Text> <Text color={TONE.bad}>−{g.removed}</Text>
+                    <Text dimColor> not committed</Text>
+                  </Text>
+                )}
+              </Box>
+            )}
+            {g &&
+              others.slice(0, L.branchRows).map(b => (
+                <Text color={b.isMerged ? TONE.accent : undefined} dimColor={!b.isMerged} wrap="truncate-end">
+                  {b.isMerged ? '✓' : '·'} {cut(b.name, W - (b.isMerged ? 34 : 18))} · {b.age}
+                  {b.isMerged ? ` · merged into ${g.base}` : ''}
+                </Text>
+              ))}
+            {g && others.length > L.branchRows && <Text dimColor>+{others.length - L.branchRows} more branches</Text>}
+            {g && g.worktrees.length > 1 && <Text dimColor>worktrees</Text>}
+            {g &&
+              g.worktrees.length > 1 &&
+              g.worktrees.map(w => {
+                const used = sessionByCwd.get(w.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase())
+                const who = used ? (used.id === s.selfId ? 'this session' : `session ${used.id.slice(0, 8)}`) : ''
+                const name = w.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? w.path
+                return (
+                  <Text dimColor wrap="truncate-end">
+                    {'  '}{cut(name, 18)} [{w.branch}]{who ? ` ← ${who}` : ''}
+                  </Text>
+                )
+              })}
+          </Box>
+        )}
+      </Box>
+    )
+
+    // ---- PRs & CI -------------------------------------------------------------
+    const mineRow = (p: PrRow) => {
+      const ci = CI[p.ci]
+      const rv = reviewChip(p)
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" columnGap={1}>
+            <Text bold>#{p.number}</Text>
+            {p.repo && <Text color={TONE.accent}>{cut(p.repo, isNarrow ? 12 : 20)}</Text>}
+            <Text color={ci.tone} inverse={ci.inverse}>{ci.glyph}</Text>
+            <Text color={rv.tone}>{rv.text}</Text>
+            {p.conflicts && <Text color={TONE.bad}>conflicts</Text>}
+            <Text dimColor>{p.ageDays}d</Text>
+            {!isNarrow && <Text wrap="truncate-end">{p.title}</Text>}
+          </Box>
+          {isNarrow && (
+            <Box paddingLeft={2}>
+              <Text dimColor wrap="truncate-end">{p.title}</Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+    const prs = s.prs
+    const prSummary = !prs ? 'loading' : prs.error ? 'gh unavailable' : `${prs.mine.length} mine · ${prs.toReview.length} to review`
+    const prSection = (
+      <Box flexDirection="column">
+        <Heading id="prs" hotkey="6" title="PRs & CI" summary={prSummary} />
+        {!folded.includes('prs') && (
+          <Box flexDirection="column" paddingLeft={2}>
+            {!prs && <Text dimColor>loading…</Text>}
+            {prs?.error && <Text color={TONE.warn} wrap="wrap">! {prs.error}</Text>}
+            {prs && !prs.error && (
+              <Box flexDirection="column">
+                <Text dimColor>mine ({prs.mine.length})</Text>
+                {prs.mine.length === 0 && <Text dimColor>{'  '}none open</Text>}
+                {prs.mine.map(mineRow)}
+                <Text dimColor>to review ({prs.toReview.length})</Text>
+                {prs.toReview.length === 0 && <Text dimColor>{'  '}inbox zero</Text>}
+                {prs.toReview.map(p => (
+                  <Text wrap="truncate-end" color={p.ageDays >= 3 ? TONE.warn : undefined}>
+                    #{p.number} @{p.author} · {p.repo ? `${p.repo} · ` : ''}{p.ageDays}d · {cut(p.title, W - 20 - p.author.length - p.repo.length)}
+                  </Text>
+                ))}
+                <Text dimColor>gh synced {ago(now - prs.fetchedAt)} ago</Text>
+              </Box>
+            )}
+          </Box>
+        )}
+      </Box>
+    )
+
+    // ---- footer ---------------------------------------------------------------
+    const footer = (
+      <Box flexDirection="row" marginTop={1}>
+        <Button
+          key="hide"
+          plain
+          hotkey="h"
+          label="hide"
+          dimColor
+          onPress={async () => {
+            hooks.onHide?.()
+            await $.ui.close({ id: PANE })
+          }}
+        />
+        <Text dimColor wrap="truncate-end">
+          {e.props.isFocused ? '  1-6 fold · a alerts · ↑↓ scroll · esc back' : isNarrow ? '  ctrl+x tab: keys' : '  ctrl+x tab for keys · 1-6 fold · a alerts'}
+        </Text>
+      </Box>
+    )
+
+    return (
+      <Box flexDirection="column" width={W}>
+        {header}
+        {attention}
+        {sessions}
+        {agentsSection}
+        {monitor}
+        {work}
+        {prSection}
+        {footer}
+      </Box>
+    )
+  })
+}

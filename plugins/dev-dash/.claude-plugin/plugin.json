@@ -1,7 +1,7 @@
 {
   "name": "dev-dash",
-  "version": "0.1.0",
-  "description": "Developer dashboard pane: attention, sessions, work in flight, PRs and CI",
+  "version": "0.2.0",
+  "description": "Developer dashboard pane: what needs you, every Claude session and subagent, usage limits, git and PRs",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Rahul Chauhan",
