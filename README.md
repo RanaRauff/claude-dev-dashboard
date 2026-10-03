@@ -72,6 +72,7 @@ Then, in any session:
 - `/dash-hide` closes it
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
+- `/dash-handoff on|off` writes (or stops writing) a handoff note each time a session compacts (on by default)
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
 - `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
 
@@ -95,8 +96,8 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 **Writes**
 - `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, its one-line summary (only if summaries are on), cost, context use and its per-turn trend, cache hit rate, latest step, a stuck flag, a risky-command flag (the pattern name, not the command), and the files it edited in the last 30 minutes.
 - In that same file, for the Plan, Sources and Files sections: the text of the task in progress in its todo list, the URLs it fetched (scheme, host and path only; credentials, query strings and fragments are dropped before anything is stored) and the searches it ran (cut to 80 characters), and the paths of files it edited this turn with their added and removed line counts.
-- `~/.claude/dev-dash/handoffs/<time>-<session>.md`, once each time this session's conversation compacts (`/compact` or automatic): a short note with the session's repo, branch and directory, a `claude --resume` line, how far its todo list got, its last step, the files it edited recently, and the summary text the compaction kept (cut to 2000 characters). These files stay on your machine and are never deleted by dev-dash; remove them whenever you like. Compactions inside subagents are not written.
-- Its own plugin store (only the alerts, band and summaries on/off choices).
+- `~/.claude/dev-dash/handoffs/<time>-<session>.md`, once each time this session's conversation compacts (`/compact` or automatic): a short note with the session's repo, branch and directory, a `claude --resume` line, how far its todo list got, its last step, the files it edited recently, and the summary text the compaction kept (cut to 2000 characters). These files stay on your machine. Only the newest 30 are kept: when a new note is written, dev-dash deletes older files in that folder, only files named like its own notes (a date and time, a short session id and `.md`), one bare file name at a time inside that folder, and nothing else. `/dash-handoff off` stops writing them. Compactions inside subagents are not written.
+- Its own plugin store (only the alerts, band, summaries and handoff on/off choices).
 
 **Network:** the `gh` call to GitHub and, only if you turn summaries on, one small model call per finished turn through your own Claude Code session. Nothing else leaves your machine.
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { clip, FILES_MAX, handoffName, handoffNote, SUMMARY_MAX } from './handoff'
+import { clip, FILES_MAX, HANDOFFS_KEPT, handoffName, handoffNote, staleNotes, SUMMARY_MAX } from './handoff'
 import type { HandoffFacts } from './handoff'
 
 const AT = new Date(2026, 9, 3, 16, 42, 7).getTime()
@@ -63,6 +63,33 @@ describe('handoff note', () => {
   test('clip leaves short text alone', () => {
     expect(clip('short', 10)).toBe('short')
     expect(clip('abcdefghij', 5)).toBe('abcd…')
+  })
+})
+
+describe('retention', () => {
+  const name = (i: number) => `20261003-16${String(i).padStart(2, '0')}00-abcd1234.md`
+
+  test('keeps the newest notes and names the older ones for deletion', () => {
+    const names = Array.from({ length: 35 }, (_, i) => name(i)).reverse()
+    const stale = staleNotes(names)
+    expect(stale.length).toBe(35 - HANDOFFS_KEPT)
+    expect(stale).toEqual([name(0), name(1), name(2), name(3), name(4)])
+    expect(staleNotes(names, 40)).toEqual([])
+    expect(staleNotes([], 30)).toEqual([])
+  })
+
+  test('returns bare names only, never a path, so a delete cannot be pointed anywhere else', () => {
+    const names = [name(1), name(2), 'C:\\Users\\John Smith\\x.md', 'sub/20261003-160000-abcd1234.md', '..\\20261003-160000-abcd1234.md', '-rf', '20261003-160000-ab cd.md']
+    const stale = staleNotes(names, 0)
+    expect(stale).toEqual([name(1), name(2)])
+    for (const n of stale) expect(n).toMatch(/^[0-9][A-Za-z0-9.-]*$/)
+    for (const n of stale) expect(n).not.toMatch(/[\\/ *?"]/)
+  })
+
+  test('only ever names files that look like our own notes', () => {
+    const names = ['notes.md', '../x.md', 'README.md', '20261003-160000-abcd1234.txt', name(1), name(2)]
+    expect(staleNotes(names, 1)).toEqual([name(1)])
+    expect(staleNotes(['notes.md', 'x.md'], 0)).toEqual([])
   })
 })
 

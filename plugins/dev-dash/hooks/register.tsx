@@ -44,8 +44,8 @@ import {
   tidySummary,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
-import { handoffName, handoffNote } from './handoff'
-import { addSource,countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
+import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
+import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
 
 const PANE = 'dev-dash'
@@ -120,6 +120,7 @@ const ctx = {
   selfId: '',
   dir: '',
   handoffDir: '',
+  handoffOn: true,
   registryDir: '',
   projectsDir: '',
   isOpen: false,
@@ -677,6 +678,20 @@ async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
   return files
 }
 
+// Keep only the newest HANDOFFS_KEPT notes. There is no delete in the file API, so this asks the OS;
+// staleNotes only ever names files that look exactly like the ones we write.
+async function pruneHandoffs($: Engine) {
+  const entries = await $.fs.list(ctx.handoffDir).catch(() => [])
+  for (const name of staleNotes(entries.filter(f => f.kind === 'file').map(f => f.name))) {
+    // Run in the notes folder and pass only the bare name (it has matched NOTE_NAME: no spaces, separators,
+    // wildcards or leading dash). Passing a full path through cmd's re-parsing is what could split on a
+    // home directory with a space.
+    await $.process
+      .run(ctx.isWindows ? ['cmd', '/c', 'del', '/q', name] : ['rm', '-f', name], { cwd: ctx.handoffDir, timeoutMs: 10_000 })
+      .catch(() => undefined)
+  }
+}
+
 async function tick($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
@@ -718,6 +733,9 @@ export const register: Register = on => {
     await $.command.register({ name: 'dash-summaries', description: 'Write a one-line summary per session after each turn (on | off; uses a small model call per turn)' })
     const storedSummaries = await $.store.get('summariesOn').catch(() => undefined)
     if (typeof storedSummaries === 'boolean') ctx.summariesOn = storedSummaries
+    await $.command.register({ name: 'dash-handoff', description: 'Write a handoff note when a session compacts (on | off, or toggle)' })
+    const storedHandoff = await $.store.get('handoffOn').catch(() => undefined)
+    if (typeof storedHandoff === 'boolean') ctx.handoffOn = storedHandoff
     await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
@@ -870,11 +888,23 @@ export const register: Register = on => {
     return { text: `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.` }
   })
 
+  on('command.run', { command: 'dash-handoff' }, async ($, e) => {
+    const arg = (e.args ?? '').trim().toLowerCase()
+    ctx.handoffOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.handoffOn
+    await $.store.set('handoffOn', ctx.handoffOn)
+
+    return {
+      text: ctx.handoffOn
+        ? `Handoff notes on: one short note in ${ctx.handoffDir || '~/.claude/dev-dash/handoffs'} each time a session compacts (newest ${HANDOFFS_KEPT} kept).`
+        : 'Handoff notes off. Notes already written stay where they are.',
+    }
+  })
+
   // A handoff note whenever the main conversation compacts, for whoever picks the work up after.
   // `precompute` installs nothing and a subagent's own compaction is not this session's, so both are skipped.
   on('session.compact', async ($, e, next) => {
     const ran = await next(e)
-    if (e.agentId || e.trigger === 'precompute' || ran.skip !== undefined || !ctx.handoffDir || !ctx.selfId) return ran
+    if (!ctx.handoffOn || e.agentId || e.trigger === 'precompute' || ran.skip !== undefined || !ctx.handoffDir || !ctx.selfId) return ran
     const at = Date.now()
     try {
       await $.fs.write(
@@ -896,6 +926,7 @@ export const register: Register = on => {
         }),
       )
       note($, { at, tone: 'info', text: 'saved a handoff note for this compaction' }, false)
+      await pruneHandoffs($)
     } catch {}
 
     return ran
