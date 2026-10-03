@@ -13,6 +13,8 @@ export type TabView = {
   Button: El
   W: number
   now: number
+  /** The card border the theme draws with. */
+  border?: string
   tone: { ok: string; warn: string; bad: string; info: string; accent: string; mute: string }
   fmt: { ago: (ms: number) => string; cut: (s: string, n: number) => string }
 }
@@ -22,7 +24,7 @@ function Card(v: TabView, p: { title: string; tone?: string; children?: unknown 
   const { Box, Text, W, tone } = v
 
   return (
-    <Box borderStyle="round" borderColor={p.tone ?? tone.mute} paddingX={1} flexDirection="column" width={W}>
+    <Box borderStyle={(v.border ?? 'round') as 'round'} borderColor={p.tone ?? tone.mute} paddingX={1} flexDirection="column" width={W}>
       <Text bold color={p.tone}>{p.title}</Text>
       {p.children}
     </Box>

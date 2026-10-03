@@ -20,8 +20,8 @@ import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './k
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { TABS, isTab } from './entertainment'
-import { applyTheme, themeByName } from './themes'
-import type { Roles } from './themes'
+import { applyLook, applyTheme, themeByName } from './themes'
+import type { Look, Roles } from './themes'
 import { progressSections } from './progress-view'
 import { customView, entertainmentView } from './tabs-view'
 import { testBadge } from './testrun'
@@ -47,6 +47,7 @@ export const tabState = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashb
 // ---------------------------------------------------------------------------
 // A live table: applyTheme (themes.ts) points it at the chosen theme at the start of each render, so every colour
 // below is read when it is drawn. `you` is the colour of "this needs you".
+export const LOOK: Look = { border: 'round', caps: false }
 export const TONE: Roles = {
   you: 'yellow',
   ok: 'green',
@@ -199,6 +200,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const { Box, Button, Text } = $.ui.resolve(e)
     const s = await read($, snap)
     applyTheme(TONE, s?.theme)
+    applyLook(LOOK, s?.theme)
     const folded = (await read($, collapsed)) ?? []
     const opened2 = (await read($, expanded)) ?? []
     const isPulse = (await read($, blink)) === true
@@ -218,7 +220,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
 
     // A card: the Flight Deck look. A rounded border in the section's colour; the heading is its first line.
     const Frame = (p: { tone?: string; children?: unknown }) => (
-      <Box borderStyle="round" borderColor={p.tone ?? TONE.mute} paddingX={1} flexDirection="column" width={W}>
+      <Box borderStyle={LOOK.border} borderColor={p.tone ?? TONE.mute} paddingX={1} flexDirection="column" width={W}>
         {p.children}
       </Box>
     )
@@ -236,7 +238,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             label={isOpen ? '▾' : '▸'}
             onPress={() => (isFocus && FOCUS_FOLD.includes(p.id) ? update($, expanded, list => toggle(list, p.id)) : update($, collapsed, list => toggle(list, p.id)))}
           />
-          <Text bold color={p.tone}> {p.title} </Text>
+          <Text bold color={p.tone}> {LOOK.caps ? p.title.toUpperCase() : p.title} </Text>
           <Box flexGrow={1} />
           <Text dimColor wrap="truncate-end">{cut(p.summary, Math.max(8, W - p.title.length - 12))}</Text>
         </Box>
@@ -327,7 +329,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
 
     // ---- header card ------------------------------------------------------
     const header = (
-      <Box borderStyle="round" borderColor={headTone} paddingX={1} flexDirection="column" width={W}>
+      <Box borderStyle={LOOK.border} borderColor={headTone} paddingX={1} flexDirection="column" width={W}>
         <Box flexDirection="row" justifyContent="center">
           <Text bold>DEV-DASH</Text>
         </Box>
@@ -868,6 +870,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       W,
       now,
       tone: TONE,
+      border: LOOK.border,
       fmt: { ago, cut },
     })
     const progress = progressSections({
@@ -886,7 +889,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
 
     // ---- footer: the buttons for the whole pane, reached with the arrows like everything else ----------
     const helpPanel = isHelpOn && (
-      <Box borderStyle="round" borderColor={TONE.info} paddingX={1} flexDirection="column" width={W} marginTop={1}>
+      <Box borderStyle={LOOK.border} borderColor={TONE.info} paddingX={1} flexDirection="column" width={W} marginTop={1}>
         <Text bold>Keys</Text>
         {HELP_KEYS.map(([key, what]) => (
           <Text wrap="truncate-end">
@@ -937,7 +940,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         <Text dimColor wrap="truncate-end">{limits.length > 0 ? ` · ${limits.map(l => `${l.kind} ${Math.round(l.pct)}%`).join(' · ')}` : ''}{att.total > 0 ? ' · see the Dashboard tab' : ''}</Text>
       </Box>
     )
-    const tabView = { Box, Text, Button, W, now, tone: TONE, fmt: { ago, cut } }
+    const tabView = { Box, Text, Button, W, now, tone: TONE, border: LOOK.border, fmt: { ago, cut } }
 
     return (
       <Box flexDirection="column" width={W}>

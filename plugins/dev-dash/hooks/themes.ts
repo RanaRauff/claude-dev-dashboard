@@ -48,7 +48,7 @@ export const THEMES: ReadonlyArray<{ id: ThemeId; label: string; blurb: string; 
   {
     id: 'hacker',
     label: 'Hacker',
-    blurb: 'Terminal green on black, with red kept for danger. Best on a dark background.',
+    blurb: 'Terminal green on black: plain +--+ borders, CAPITAL headings, red kept for danger. Best on a dark background.',
     tone: { you: '#CCFFCC', ok: '#00FF41', warn: '#B6FF00', bad: '#FF3B3B', info: '#2DE2A6', accent: '#7CFF6B', mute: '#2E8B3E' },
   },
   {
@@ -70,6 +70,15 @@ export const themeByName = (name: string) => {
 
 /** The theme after `id`, wrapping around: what the footer button does. */
 export const nextTheme = (id: ThemeId): ThemeId => THEMES[(THEMES.findIndex(t => t.id === id) + 1) % THEMES.length].id
+
+/** How a theme draws, beyond colour: the card border and whether headings are in capitals. */
+export type Look = { border: 'round' | 'single' | 'double' | 'classic'; caps: boolean }
+const LOOKS: Partial<Record<ThemeId, Look>> = { hacker: { border: 'classic', caps: true } }
+
+/** Point the live look (borders, capitals) at a theme. Every theme but Hacker uses round borders and normal case. */
+export const applyLook = (into: Look, id: unknown) => {
+  Object.assign(into, LOOKS[id as ThemeId] ?? { border: 'round', caps: false })
+}
 
 /** Point the live colour table at a theme. Unknown ids fall back to `auto`. */
 export const applyTheme = (into: Roles, id: unknown) => {

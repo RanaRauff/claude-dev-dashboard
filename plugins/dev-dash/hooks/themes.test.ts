@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { THEMES, applyTheme, isTheme, nextTheme, themeByName } from './themes'
-import type { Roles } from './themes'
+import { THEMES, applyLook, applyTheme, isTheme, nextTheme, themeByName } from './themes'
+import type { Look, Roles } from './themes'
 
 const ROLES = ['you', 'ok', 'warn', 'bad', 'info', 'accent', 'mute'] as const
 
@@ -38,5 +38,15 @@ describe('themes', () => {
     expect(live.you).toBe('yellow')
     applyTheme(live, undefined)
     expect(live.bad).toBe('red')
+  })
+})
+
+describe('look', () => {
+  test('Hacker draws plain borders and capital headings; every other theme is round and normal case', () => {
+    const look: Look = { border: 'round', caps: false }
+    applyLook(look, 'hacker')
+    expect(look).toEqual({ border: 'classic', caps: true })
+    applyLook(look, 'nord')
+    expect(look).toEqual({ border: 'round', caps: false })
   })
 })
