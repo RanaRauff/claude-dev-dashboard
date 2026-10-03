@@ -1,9 +1,17 @@
 # TODO
 
-Where dev-dash is going. Updated 3 October 2026. Owners: **Claude** (leads the project for Rahul), **Connor**, **Rahul** (owns the repo).
+Where dev-dash is going. Updated 4 October 2026. Owners: **Claude** (leads the project for Rahul), **Connor**, **Rahul** (owns the repo).
 Mark an item done by changing `[ ]` to `[x]` in the PR that finishes it.
 
 ## Now
+
+### Top item: Spotify Phase 2, link your Spotify account (Claude)
+Today's Now playing reads the Spotify app on this machine (opt-in, no login). Phase 2 is an account-linked connector using the Spotify Web API, also opt-in.
+- [ ] **Decide the network exception** (Rahul): CONTRIBUTING.md allows only `git` and `gh`. Phase 2 calls `api.spotify.com` and `accounts.spotify.com`; it needs an explicit, documented exception, off until opted in.
+- [ ] Sign-in: OAuth with PKCE, a Spotify developer app whose client ID the user creates and gives to the plugin, a one-time browser sign-in.
+- [ ] Token storage on this machine only (refresh token), with `/dash-spotify logout` that deletes it.
+- [ ] Read-only first: current track, device, progress. Play/pause/skip only if Rahul asks for it.
+- [ ] Falls back to the on-machine reading when not linked; tests with a stubbed API; README "Reads" and "Writes" lines.
 
 ### Keyboard-first navigation (Claude): built, waiting for a live check
 Goal: every part of the pane reachable from the keyboard with the keys people already know. No letter hotkeys.
