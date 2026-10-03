@@ -3,17 +3,14 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { AgentRow, PrRow, SessionRow, Snapshot } from '../types'
 import { attentionOf, itemsOf } from './attention'
 import {
-  KEYMAP,
-  RESERVED_KEYS,
+  HELP_KEYS,
   SNOOZE_MS,
+  actionsFor,
   dismissAdd,
   ids,
   isMuted,
-  moveSelection,
-  neighbour,
   noMuting,
   resumeCommand,
-  selectedId,
   snoozeAdd,
 } from './keys'
 
@@ -58,23 +55,11 @@ const snapshot = (over: Partial<Snapshot> = {}): Snapshot => ({
 
 const caps = { reviews: 5, sessions: 10, agents: 8 }
 
-describe('the keymap', () => {
-  test('every key is one lowercase letter or digit, and none repeats', () => {
-    for (const k of KEYMAP) expect(k.key).toMatch(/^[a-z0-9]$/)
-    expect(new Set(KEYMAP.map(k => k.key)).size).toBe(KEYMAP.length)
-    expect(new Set(KEYMAP.map(k => k.action)).size).toBe(KEYMAP.length)
-  })
-
-  test('the keys the project reserved for itself are all in the keymap, and no digit is (digits fold sections)', () => {
-    for (const key of ['j', 'k', 'g', 'c', 's', 'x', 'h', 'q']) expect(RESERVED_KEYS).toContain(key)
-    for (const key of RESERVED_KEYS) expect(key).not.toMatch(/\d/)
-  })
-
-  test('every key explains itself', () => {
-    for (const k of KEYMAP) {
-      expect(k.label.length).toBeGreaterThan(0)
-      expect(k.help.length).toBeGreaterThan(8)
-    }
+describe('the help text', () => {
+  test('explains the generic keys and nothing that needs a letter', () => {
+    const keys = HELP_KEYS.map(([k]) => k).join(' | ')
+    for (const word of ['Enter', 'Esc', 'ctrl+x tab', 'Tab']) expect(keys).toContain(word)
+    for (const [, what] of HELP_KEYS) expect(what.length).toBeGreaterThan(8)
   })
 })
 
@@ -126,7 +111,7 @@ describe('what needs you', () => {
   })
 })
 
-describe('the rows the cursor can land on', () => {
+describe('the rows that can be opened', () => {
   test('are listed in the order the pane draws them', () => {
     const s = snapshot()
     const items = itemsOf(s, attentionOf(s, noMuting(NOW)), [], caps)
@@ -165,28 +150,19 @@ describe('the rows the cursor can land on', () => {
   })
 })
 
-describe('moving the cursor', () => {
+describe('what a row offers', () => {
   const s = snapshot()
   const items = itemsOf(s, attentionOf(s, noMuting(NOW)), [], caps)
 
-  test('starts on the first row when nothing is stored, or the stored row has gone', () => {
-    expect(selectedId(items, null)).toBe(items[0].id)
-    expect(selectedId(items, 'gone:forever')).toBe(items[0].id)
-    expect(selectedId([], null)).toBeNull()
+  test('an Attention row can be copied, snoozed and dismissed', () => {
+    const wait = items.find(i => i.id.startsWith('wait:'))!
+    expect(actionsFor(wait).map(a => a.id)).toEqual(['copy', 'snooze', 'dismiss'])
+    expect(actionsFor(wait)[0].label).toBe('copy resume command')
   })
 
-  test('steps down and up and stops at both ends', () => {
-    const second = moveSelection(items, items[0].id, 1)
-    expect(second).toBe(items[1].id)
-    expect(moveSelection(items, second, -1)).toBe(items[0].id)
-    expect(moveSelection(items, items[0].id, -1)).toBe(items[0].id)
-    const last = items[items.length - 1].id
-    expect(moveSelection(items, last, 1)).toBe(last)
-  })
-
-  test('a row that was muted hands the cursor to its neighbour', () => {
-    expect(neighbour(items, items[1].id)).toBe(items[2].id)
-    expect(neighbour(items, items[items.length - 1].id)).toBe(items[items.length - 2].id)
-    expect(neighbour([items[0]], items[0].id)).toBeNull()
+  test('a session, an agent and a PR can only be copied, and the label says what', () => {
+    expect(actionsFor(items.find(i => i.id === 's:c')!).map(a => a.id)).toEqual(['copy'])
+    expect(actionsFor(items.find(i => i.id === 'a:x1')!)[0].label).toBe('copy resume command for its session')
+    expect(actionsFor(items.find(i => i.id === 'rv:web#7')!)).toEqual([{ id: 'copy', label: 'copy PR link' }])
   })
 })

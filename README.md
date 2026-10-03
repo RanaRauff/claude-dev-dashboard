@@ -45,24 +45,24 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 
 ## Keyboard
 
-`/dash` opens the pane with the keyboard already on it, so the keys work straight away. The footer always shows them, and **h** opens the full list inside the pane. **esc** gives the keyboard back to the prompt, and **ctrl+x tab** brings it back to the pane.
+The pane uses the same keys as the rest of Claude Code, with no letter shortcuts to learn.
 
 | Key | Does |
 | --- | --- |
-| **j** / **k** | Move the cursor down and up through the rows (Attention, Sessions, Agents, PRs). A **▶** marks the selected row. |
-| **g** | Jump to the first row. |
-| **c** | Copy for the selected row: `claude --resume <id>` for a session or agent, the link for a PR, a one-line summary for the rest. |
-| **s** | Snooze the selected Attention item for 15 minutes, in the pane, the band above the prompt and the toasts. |
-| **x** | Dismiss the selected Attention item until it changes (a session that waits again, or fails differently, comes back). |
-| **u** | Bring back everything you snoozed or dismissed. |
-| **r** | Refresh everything now, PRs included. |
-| **a** | Turn toasts and the chime on or off. |
-| **h** | Show or hide the key list. |
-| **q** | Close the pane. |
+| **ctrl+x tab** | Take the keyboard from the prompt to the pane. `/dash` does the same and opens the pane if it is closed. |
+| **Esc** | Give the keyboard back to the prompt. |
+| **↑ ↓** or **Tab** | Move the highlight to the previous or next row or button. |
+| **Enter** | Press the highlighted button. On a row marker (`›`), it opens that row's actions. |
 | **1**–**9** | Fold or unfold a section. |
-| arrows | Scroll the pane. |
 
-Only Attention items can be snoozed or dismissed. Snoozes last until their time is up and are forgotten when Claude Code restarts. Rows in the Plan, Sources and Files sections can't be selected yet.
+Every row in Attention, Sessions, Agents and PRs starts with a small `›`. Move onto it and press **Enter** and the row's buttons appear under it:
+
+- **copy …**: puts `claude --resume <id>` on the clipboard for a session or agent, the link for a PR, or a one-line summary for the rest.
+- **snooze 15m** and **dismiss** (Attention rows only): hide the item in the pane, the band above the prompt and the toasts. Snooze lasts 15 minutes; dismiss lasts until the item changes (a session that waits again, or fails differently, comes back). **bring back** appears under Attention while anything is hidden.
+
+The buttons at the bottom (**refresh**, **alerts**, **help**, **close**) are reached the same way. **help** lists these keys inside the pane.
+
+Snoozes are forgotten when Claude Code restarts. Rows in the Plan, Sources and Files sections have no `›` yet.
 
 ## Alerts
 
@@ -87,12 +87,12 @@ The plugin is built on Claude Code's mods (function hooks) API, which is in **ea
 
 Then, in any session:
 
-- `/dash` opens the dashboard with the keyboard on it; it never opens by itself
-- `/dash-hide` closes it (**q** in the pane)
+- `/dash` opens the dashboard with the keyboard on it (or brings the keyboard back to it); it never opens by itself
+- `/dash-hide` closes it (or press the **close** button)
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
-- `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
+- `/dash-refresh` (or the **refresh** button) refreshes everything now, PRs included
 
 ### Requirements
 

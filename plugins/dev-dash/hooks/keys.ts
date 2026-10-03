@@ -1,38 +1,23 @@
-// dev-dash: the keyboard layer. Pure functions only, so they test without a session.
+// dev-dash: row ids, the actions a row offers, and snooze/dismiss. Pure functions only, so they test without a session.
 //
-// The pane draws plain Buttons with single-key hotkeys (one digit or one lowercase letter), which
-// the engine presses while the pane holds the keyboard. This file holds the one keymap that both the
-// legend and the help screen are drawn from, the ids that make rows selectable and mutable, and the
-// cursor and snooze arithmetic.
+// The pane is driven with the generic keys the engine already gives a focused pane: Tab and the arrow keys move
+// the focus ring over the Buttons, Enter presses the one in the ring, Esc gives the keyboard back to the prompt and
+// ctrl+x tab takes it back. Every row has a small marker Button as its stop in the ring, and pressing it opens the
+// row's actions (copy, snooze, dismiss). No letter hotkeys.
 
-import type { AgentRow, DashSection, DiskRow, LimitRow, PrRow, SessionRow } from '../types'
+import type { AgentRow, DiskRow, LimitRow, PrRow, SessionRow } from '../types'
+import type { DashSection } from '../types'
 
 // ---------------------------------------------------------------------------
-// The keymap: one table, drawn as the footer legend and as the help screen
+// The keys, as the help panel explains them
 // ---------------------------------------------------------------------------
-export type KeyAction =
-  | 'down' | 'up' | 'top'
-  | 'copy' | 'snooze' | 'dismiss' | 'undo'
-  | 'refresh' | 'alerts' | 'help' | 'close'
-
-export type KeyDef = { key: string; label: string; action: KeyAction; group: 'Move' | 'Act' | 'Pane'; help: string }
-
-export const KEYMAP: readonly KeyDef[] = [
-  { key: 'j', label: 'down', action: 'down', group: 'Move', help: 'select the next row' },
-  { key: 'k', label: 'up', action: 'up', group: 'Move', help: 'select the previous row' },
-  { key: 'g', label: 'top', action: 'top', group: 'Move', help: 'select the first row' },
-  { key: 'c', label: 'copy', action: 'copy', group: 'Act', help: 'copy the resume command, PR link or a one-line description of the selected row' },
-  { key: 's', label: 'snooze', action: 'snooze', group: 'Act', help: 'hide the selected Attention item for 15 minutes, in the pane, the band and the toasts' },
-  { key: 'x', label: 'dismiss', action: 'dismiss', group: 'Act', help: 'hide the selected Attention item until it changes' },
-  { key: 'u', label: 'undo', action: 'undo', group: 'Act', help: 'bring back everything you snoozed or dismissed' },
-  { key: 'r', label: 'refresh', action: 'refresh', group: 'Pane', help: 'refresh everything now, PRs included' },
-  { key: 'a', label: 'alerts', action: 'alerts', group: 'Pane', help: 'turn toasts and the chime on or off' },
-  { key: 'h', label: 'help', action: 'help', group: 'Pane', help: 'show or hide this key list' },
-  { key: 'q', label: 'close', action: 'close', group: 'Pane', help: 'close the pane' },
+export const HELP_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ['↑ ↓  or  Tab', 'move the highlight to the previous or next row or button'],
+  ['Enter', 'press the highlighted button; on a row, open its actions'],
+  ['Esc', 'give the keyboard back to the prompt'],
+  ['ctrl+x tab', 'bring the keyboard back to this pane (or type /dash)'],
+  ['1 – 9', 'fold or unfold a section'],
 ]
-
-/** Keys a section or another module may not claim as a hotkey. */
-export const RESERVED_KEYS: readonly string[] = KEYMAP.map(k => k.key)
 
 export const SNOOZE_MS = 15 * 60_000
 
@@ -79,44 +64,31 @@ export const dismissAdd = (dismissed: readonly string[], id: string, keep = 200)
   dismissed.includes(id) ? [...dismissed] : [...dismissed, id].slice(-keep)
 
 // ---------------------------------------------------------------------------
-// The selectable rows, in the order the pane draws them
+// The rows that can be opened, in the order the pane draws them
 // ---------------------------------------------------------------------------
 export type Item = {
   id: string
   kind: 'attention' | 'session' | 'agent' | 'pr' | 'review'
-  /** What `c` puts on the clipboard. */
+  /** What Copy puts on the clipboard. */
   copy: string
-  /** A short name for the toast after copying. */
+  /** What the copy button is called, and what the toast says was copied. */
   what: string
-  /** True for Attention items, the only ones `s` and `x` apply to. */
+  /** True for Attention items, the only ones that can be snoozed or dismissed. */
   canMute: boolean
 }
 
 export const itemById = (items: readonly Item[], id: string | null | undefined) => items.find(i => i.id === id)
 
-/** The selected id: the stored one if that row still exists, else the first row (or null with none). */
-export const selectedId = (items: readonly Item[], stored: string | null | undefined): string | null =>
-  itemById(items, stored)?.id ?? items[0]?.id ?? null
+export type RowAction = { id: 'copy' | 'snooze' | 'dismiss'; label: string }
 
-/** The id `delta` rows away from the selected one, stopping at the ends; null with no rows. */
-export const moveSelection = (items: readonly Item[], stored: string | null | undefined, delta: number): string | null => {
-  if (items.length === 0) return null
-  const at = Math.max(0, items.findIndex(i => i.id === selectedId(items, stored)))
-  const next = Math.min(items.length - 1, Math.max(0, at + delta))
+/** The buttons a row shows when it is opened. Only Attention items can be muted. */
+export const actionsFor = (item: Item): RowAction[] => [
+  { id: 'copy', label: `copy ${item.what}` },
+  ...(item.canMute ? ([{ id: 'snooze', label: 'snooze 15m' }, { id: 'dismiss', label: 'dismiss' }] as const) : []),
+]
 
-  return items[next].id
-}
-
-/** The row to move to when `id` leaves the list: the one after it, else the one before it, else null. */
-export const neighbour = (items: readonly Item[], id: string): string | null => {
-  const at = items.findIndex(i => i.id === id)
-  if (at < 0) return items[0]?.id ?? null
-
-  return items[at + 1]?.id ?? items[at - 1]?.id ?? null
-}
-
-/** Which of the sections that have rows are folded away: their rows are not selectable. */
+/** Which of the sections that have rows are folded away: their rows are not shown. */
 export const isShown = (folded: readonly DashSection[], id: DashSection) => !folded.includes(id)
 
-/** How many rows the pane draws per section, so the cursor never lands on a row that is not on screen. */
+/** How many rows the pane draws per section. */
 export type Caps = { reviews: number; sessions: number; agents: number }

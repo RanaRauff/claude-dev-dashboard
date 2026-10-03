@@ -15,8 +15,8 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
-import { KEYMAP, dismissAdd, ids, itemById, moveSelection, neighbour, selectedId, snoozeAdd } from './keys'
-import type { KeyAction, Muting } from './keys'
+import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './keys'
+import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { progressSections } from './progress-view'
 
@@ -25,7 +25,7 @@ export const PANE = 'dev-dash'
 export const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 export const collapsed = atom({ plugin: 'dev-dash', key: 'collapsed' } as const, [])
 export const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
-export const cursor = atom({ plugin: 'dev-dash', key: 'cursor' } as const, '')
+export const openRow = atom({ plugin: 'dev-dash', key: 'openRow' } as const, '')
 export const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
 export const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
 export const showHelp = atom({ plugin: 'dev-dash', key: 'help' } as const, false)
@@ -169,7 +169,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       dismissed: (await read($, dismissed)) ?? [],
       now,
     }
-    const storedCursor = (await read($, cursor)) || null
+    const opened = (await read($, openRow)) || ''
     const isHelpOn = (await read($, showHelp)) === true
 
     const rule = (used: number) => '─'.repeat(clamp(W - used, 0, W))
@@ -197,13 +197,55 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       )
     }
 
-    // A selectable row: a marker in the margin when the cursor is on it, and a key the pane can scroll to.
-    const Row = (p: { id: string; children?: unknown }) => (
-      <Box key={`row-${p.id}`} flexDirection="row">
-        <Text bold color={TONE.accent}>{p.id === sel ? '▶' : ' '}</Text>
-        <Box flexDirection="column" flexGrow={1}>{p.children}</Box>
-      </Box>
-    )
+    // What the buttons under an opened row do. (The row's own press only opens or closes them.)
+    const undo = async () => {
+      await update($, snoozed, () => ({}))
+      await update($, dismissed, () => [])
+      return $.ui.toast('Brought back what you snoozed or dismissed')
+    }
+    const runAction = async (action: RowAction['id'], it: Item) => {
+      await update($, openRow, () => '')
+      if (action === 'copy') {
+        const r = await $.ui.copy({ text: it.copy, surface: e.surface })
+        return $.ui.toast(r.isCopied ? `Copied the ${it.what}` : 'Could not copy to the clipboard')
+      }
+      if (action === 'snooze') {
+        await update($, snoozed, m => snoozeAdd(m ?? {}, it.id, Date.now()))
+        return $.ui.toast('Snoozed for 15 minutes')
+      }
+      await update($, dismissed, d => dismissAdd(d ?? [], it.id))
+      return $.ui.toast('Dismissed until it changes')
+    }
+
+    // A selectable row. Its marker is a stop for Tab and the arrow keys; Enter on it opens or closes the row's
+    // actions, which are buttons right under it. The first marker takes the focus ring when the pane gets the keyboard.
+    const Row = (p: { id: string; children?: unknown }) => {
+      const it = itemById(items, p.id)
+      const isOpen = p.id === opened
+      return (
+        <Box key={`row-${p.id}`} flexDirection="column">
+          <Box flexDirection="row">
+            <Button
+              key={`pick-${p.id}`}
+              plain
+              dimColor
+              autoFocus={p.id === items[0]?.id ? true : undefined}
+              label={isOpen ? '▾' : '›'}
+              onPress={() => update($, openRow, v => (v === p.id ? '' : p.id))}
+            />
+            <Text> </Text>
+            <Box flexDirection="column" flexGrow={1}>{p.children}</Box>
+          </Box>
+          {isOpen && it && (
+            <Box paddingLeft={2} flexDirection="row" flexWrap="wrap" columnGap={1}>
+              {actionsFor(it).map(a => (
+                <Button key={`act-${a.id}-${p.id}`} label={a.label} onPress={() => runAction(a.id, it)} />
+              ))}
+            </Box>
+          )}
+        </Box>
+      )
+    }
 
     if (!s) {
       return (
@@ -218,7 +260,6 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const att = attentionOf(s, muting)
     const caps = { reviews: isNarrow ? 3 : 5, sessions: L.sessionRows, agents: isNarrow ? 4 : 8 }
     const items = itemsOf(s, att, folded, caps)
-    const sel = selectedId(items, storedCursor)
     const g = s.git
     const costs = s.sessions.map(r => r.costUsd).filter((c): c is number => c !== null)
     const cost = costs.length ? costs.reduce((a, b) => a + b, 0) : null
@@ -350,7 +391,10 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
               <Text dimColor>+{att.reviews.length - caps.reviews} more reviews</Text>
             )}
             {att.hidden > 0 && (
-              <Text dimColor wrap="truncate-end">+{att.hidden} snoozed or dismissed · u brings them back</Text>
+              <Box flexDirection="row" columnGap={1}>
+                <Text dimColor>+{att.hidden} snoozed or dismissed</Text>
+                <Button key="act-undo" label="bring back" onPress={undo} />
+              </Box>
             )}
           </Box>
         )}
@@ -678,79 +722,31 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       fmt: { ago, cut, bar },
     })
 
-    // ---- keys -----------------------------------------------------------------
-    // One Button per key, drawn as the legend; the engine presses the right one while the pane holds the keyboard.
-    const go = async (id: string | null) => {
-      if (!id) return
-      await update($, cursor, () => id)
-      // Keep the row in view; a refused or failed scroll must never stop the cursor from moving.
-      await $.ui.scroll({ to: { key: `row-${id}` }, in: PANE }).catch(() => undefined)
-    }
-    const pick = () => itemById(items, sel)
-    const act: Record<KeyAction, () => unknown> = {
-      down: () => go(moveSelection(items, sel, 1)),
-      up: () => go(moveSelection(items, sel, -1)),
-      top: () => go(items[0]?.id ?? null),
-      copy: async () => {
-        const it = pick()
-        if (!it) return $.ui.toast('Nothing selected')
-        const r = await $.ui.copy({ text: it.copy, surface: e.surface })
-        return $.ui.toast(r.isCopied ? `Copied the ${it.what}` : 'Could not copy to the clipboard')
-      },
-      snooze: async () => {
-        const it = pick()
-        if (!it) return $.ui.toast('Nothing selected')
-        if (!it.canMute) return $.ui.toast('Only Attention items can be snoozed')
-        await update($, cursor, () => neighbour(items, it.id) ?? '')
-        await update($, snoozed, m => snoozeAdd(m ?? {}, it.id, Date.now()))
-        return $.ui.toast('Snoozed for 15 minutes')
-      },
-      dismiss: async () => {
-        const it = pick()
-        if (!it) return $.ui.toast('Nothing selected')
-        if (!it.canMute) return $.ui.toast('Only Attention items can be dismissed')
-        await update($, cursor, () => neighbour(items, it.id) ?? '')
-        await update($, dismissed, d => dismissAdd(d ?? [], it.id))
-        return $.ui.toast('Dismissed until it changes')
-      },
-      undo: async () => {
-        await update($, snoozed, () => ({}))
-        await update($, dismissed, () => [])
-        return $.ui.toast('Brought back what you snoozed or dismissed')
-      },
-      refresh: () => undefined, // taken by the ui.press hook in register.tsx
-      alerts: () => undefined, // taken by the ui.press hook in register.tsx
-      help: () => update($, showHelp, v => !v),
-      close: () => undefined, // taken by the ui.press hook in register.tsx
-    }
-
+    // ---- footer: the buttons for the whole pane, reached with the arrows like everything else ----------
     const helpPanel = isHelpOn && (
       <Box borderStyle="round" borderColor={TONE.info} paddingX={1} flexDirection="column" width={W} marginTop={1}>
         <Text bold>Keys</Text>
-        {(['Move', 'Act', 'Pane'] as const).map(group => (
-          <Box flexDirection="column">
-            <Text dimColor>{group}</Text>
-            {KEYMAP.filter(k => k.group === group).map(k => (
-              <Text wrap="truncate-end">
-                {'  '}<Text bold color={TONE.accent}>{k.key}</Text>{'  '}{cut(k.help, W - 10)}
-              </Text>
-            ))}
-          </Box>
+        {HELP_KEYS.map(([key, what]) => (
+          <Text wrap="truncate-end">
+            <Text bold color={TONE.accent}>{key.padEnd(isNarrow ? 12 : 14)}</Text>
+            {cut(what, W - (isNarrow ? 18 : 20))}
+          </Text>
         ))}
-        <Text dimColor wrap="truncate-end">1-9 fold a section · arrows scroll · esc returns to the prompt</Text>
+        <Text dimColor wrap="truncate-end">A › marks a row; press it to see what you can do with that row.</Text>
       </Box>
     )
 
-    // ---- footer ---------------------------------------------------------------
+    // refresh, alerts and close are answered by ui.press hooks in register.tsx (they need that module's state).
     const footer = (
       <Box flexDirection="column" marginTop={1}>
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          {KEYMAP.map(k => (
-            <Button key={`key-${k.action}`} plain hotkey={k.key} label={k.label} dimColor onPress={act[k.action]} />
-          ))}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Button key="key-refresh" label="refresh" onPress={() => undefined} />
+          <Button key="key-alerts" label={s.alertsOn ? 'alerts: on' : 'alerts: off'} onPress={() => undefined} />
+          <Button key="key-help" label={isHelpOn ? 'hide help' : 'help'} onPress={() => update($, showHelp, v => !v)} />
+          <Button key="key-close" label="close" onPress={() => undefined} />
         </Box>
         <Text dimColor wrap="truncate-end">
-          {e.props.isFocused ? '1-9 fold · arrows scroll · esc back to the prompt' : 'ctrl+x tab to use the keys · 1-9 fold'}
+          {e.props.isFocused ? '↑ ↓ move · Enter press · Esc back to the prompt' : 'ctrl+x tab to use the keys'}
         </Text>
       </Box>
     )

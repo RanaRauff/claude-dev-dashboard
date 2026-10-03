@@ -142,8 +142,8 @@ declare module 'claude-code' {
       activity: number[]
       /** Whether the pane is open; kept by the host so a reload of the mod doesn't forget it. */
       paneOpen: boolean
-      /** The id of the row the keyboard cursor is on ('' for the first row). */
-      cursor: string
+      /** The id of the row whose actions (copy, snooze, dismiss) are showing, or ''. */
+      openRow: string
       /** Attention item ids snoozed, each with the time it comes back (ms since epoch). */
       snoozed: Record<string, number>
       /** Attention item ids dismissed until they change. */
