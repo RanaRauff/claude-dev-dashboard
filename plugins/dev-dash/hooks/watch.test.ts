@@ -45,9 +45,37 @@ describe('reading a pull request', () => {
     expect(checksOf([{ state: 'PENDING' }])).toBe('pending')
   })
 
-  test('an open PR is a comparable value plus words', () => {
-    const r = readPr({ state: 'OPEN', title: ' Keyboard nav ', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] })
-    expect(r).toEqual({ value: 'OPEN|passing|review required', detail: 'open · CI passing · review required', title: 'Keyboard nav', done: false })
+  const PASS = [{ status: 'COMPLETED', conclusion: 'SUCCESS' }]
+
+  test('an open PR is a comparable value plus words: a review still outstanding is not ready', () => {
+    const r = readPr({ state: 'OPEN', title: ' Keyboard nav ', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: PASS })
+    expect(r).toEqual({ value: 'OPEN|passing|review required|open|', detail: 'open · CI passing · not approved', title: 'Keyboard nav', done: false })
+  })
+
+  test('approved, not a draft, CI passing and no conflicts is ready to merge', () => {
+    const r = readPr({ state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', reviewDecision: 'APPROVED', statusCheckRollup: PASS })
+    expect(r?.detail).toBe('ready to merge · CI passing · approved')
+    expect(r?.value).toBe('OPEN|passing|approved|ready|')
+  })
+
+  test('a draft says draft however green it is', () => {
+    const r = readPr({ state: 'OPEN', isDraft: true, reviewDecision: 'APPROVED', statusCheckRollup: PASS })
+    expect(r?.detail).toBe('draft · CI passing · approved')
+    expect(r?.value).toBe('OPEN|passing|approved|draft|')
+  })
+
+  test('failing or running CI, requested changes and merge conflicts each keep it from being ready', () => {
+    expect(readPr({ state: 'OPEN', statusCheckRollup: [{ state: 'FAILURE' }] })?.detail).toBe('open · CI failing · not approved')
+    expect(readPr({ state: 'OPEN', reviewDecision: 'APPROVED', statusCheckRollup: [{ status: 'IN_PROGRESS' }] })?.detail).toBe('open · CI running · approved')
+    expect(readPr({ state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED', statusCheckRollup: PASS })?.detail).toBe('open · CI passing · changes requested')
+    const conflict = readPr({ state: 'OPEN', mergeable: 'CONFLICTING', reviewDecision: 'APPROVED', statusCheckRollup: PASS })
+    expect(conflict?.detail).toBe('open · merge conflicts · CI passing · approved')
+    expect(conflict?.value).toBe('OPEN|passing|approved|open|conflict')
+  })
+
+  test('a PR that needs no review can be ready while not approved; no checks is said plainly', () => {
+    expect(readPr({ state: 'OPEN', reviewDecision: '', statusCheckRollup: PASS })?.detail).toBe('ready to merge · CI passing · not approved')
+    expect(readPr({ state: 'OPEN', reviewDecision: null, statusCheckRollup: [] })?.detail).toBe('ready to merge · no CI checks · not approved')
   })
 
   test('merged and closed are over; garbage is not a reading', () => {
@@ -63,10 +91,25 @@ describe('reading a pull request', () => {
     expect(describeChange('OPEN|passing|none', 'OPEN|passing|approved')).toBe('approved')
     expect(describeChange('OPEN|pending|none', 'OPEN|passing|approved')).toBe('CI passing, approved')
     expect(describeChange('OPEN|passing|approved', 'OPEN|passing|changes requested')).toBe('changes requested')
-    expect(describeChange('OPEN|passing|approved', 'OPEN|passing|none')).toBe('no review')
+    expect(describeChange('OPEN|passing|approved', 'OPEN|passing|none')).toBe('not approved')
     expect(describeChange('OPEN|passing|approved', 'MERGED|passing|approved')).toBe('merged')
     expect(describeChange('OPEN|passing|approved', 'CLOSED|passing|approved')).toBe('closed')
     expect(describeChange('CLOSED|passing|approved', 'OPEN|passing|approved')).toBe('reopened')
+  })
+
+  test('says when it became ready to merge, left draft, went back to draft or hit conflicts', () => {
+    expect(describeChange('OPEN|passing|approved|ready|', 'OPEN|failing|approved|open|')).toBe('CI failing')
+    expect(describeChange('OPEN|pending|none|open|', 'OPEN|passing|approved|ready|')).toBe('CI passing, approved, ready to merge')
+    expect(describeChange('OPEN|passing|approved|draft|', 'OPEN|passing|approved|ready|')).toBe('ready to merge')
+    expect(describeChange('OPEN|passing|approved|draft|', 'OPEN|passing|approved|open|')).toBe('ready for review')
+    expect(describeChange('OPEN|passing|approved|ready|', 'OPEN|passing|approved|draft|')).toBe('back to draft')
+    expect(describeChange('OPEN|passing|approved|ready|', 'OPEN|passing|approved|open|conflict')).toBe('merge conflicts')
+    expect(describeChange('OPEN|passing|approved|open|conflict', 'OPEN|passing|approved|ready|')).toBe('conflicts resolved, ready to merge')
+  })
+
+  test('a value saved before stages existed still compares', () => {
+    expect(describeChange('OPEN|passing|none', 'OPEN|passing|none|ready|')).toBe('changed')
+    expect(describeChange('OPEN|pending|none', 'OPEN|passing|none|ready|')).toBe('CI passing')
   })
 })
 

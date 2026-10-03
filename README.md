@@ -73,14 +73,14 @@ Then, in any session:
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
 - `/dash-handoff on|off` writes (or stops writing) a handoff note each time a session compacts (on by default)
-- `/dash-watch pr <number or URL>` keeps an eye on a pull request and marks it in a **Watching** section at the top of the pane when its CI, review state, merge or close status changes. `/dash-watch list` shows them, `/dash-watch clear <number|all>` removes them. A bare number means the repository of the session you typed it in
+- `/dash-watch pr <number or URL>` keeps an eye on a pull request and shows it in a **Watching** section at the top of the pane with where it stands (`draft`, `open`, or `ready to merge`: open, not a draft, no merge conflicts, CI neither failing nor running, no review outstanding), its CI (`passing`, `failing`, `running`, `no CI checks`) and whether it is `approved`, `not approved` or has `changes requested`, and marks it when any of that changes or it is merged or closed. `/dash-watch list` shows them, `/dash-watch clear <number|all>` removes them. A bare number means the repository of the session you typed it in
 - `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
 - `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
 
 ### Requirements
 
 - `git` on your `PATH`.
-- For **PRs & CI**, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works.
+- For **PRs & CI** and `/dash-watch`, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works. If `gh` is installed but this session can't find it (an app started before it was installed keeps its old `PATH` until it is restarted), dev-dash tries the standard Windows install folder (`%ProgramFiles%\GitHub CLI\gh.exe`) before giving up.
 - Usage limits appear on Pro and Max plans, after the session's first reply.
 
 ## What dev-dash reads and writes

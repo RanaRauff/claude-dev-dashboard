@@ -48,10 +48,23 @@ export function checksOf(rollup: unknown): CiState {
 
 const reviewOf = (v: unknown) => String(v ?? '').toLowerCase().replace(/_/g, ' ') || 'none'
 
-/** A review state as a phrase: `approved`, `changes requested`, `review required`, `no review`. */
-const reviewWords = (review: string) => (review === 'none' ? 'no review' : review)
+/** The fields `gh pr view --json` is asked for. */
+export const PR_FIELDS = 'state,title,isDraft,mergeable,reviewDecision,statusCheckRollup'
 
-/** One `gh pr view --json state,title,reviewDecision,statusCheckRollup` answer, or null if it is not one. */
+/** `approved`, `changes requested`, or `not approved` for anything else (review required, no review yet). */
+const reviewWords = (review: string) => (review === 'approved' || review === 'changes requested' ? review : 'not approved')
+
+const CI_WORDS: Record<CiState, string> = { passing: 'CI passing', failing: 'CI failing', pending: 'CI running', none: 'no CI checks' }
+
+/** Where an open PR stands: still a draft, nothing in the way of merging it, or something is. */
+export type Stage = 'draft' | 'ready' | 'open'
+const STAGE_WORDS: Record<Stage, string> = { draft: 'draft', ready: 'ready to merge', open: 'open' }
+
+/**
+ * One `gh pr view --json state,title,isDraft,mergeable,reviewDecision,statusCheckRollup` answer, or null if it is not one.
+ * "Ready to merge" means open, not a draft, no merge conflicts, CI neither failing nor still running, and no
+ * review outstanding or asking for changes. A PR that needs no review can be ready while "not approved".
+ */
 export function readPr(json: unknown): Reading | null {
   if (!json || typeof json !== 'object') return null
   const j = json as Record<string, unknown>
@@ -59,20 +72,36 @@ export function readPr(json: unknown): Reading | null {
   if (state !== 'OPEN' && state !== 'MERGED' && state !== 'CLOSED') return null
   const ci = checksOf(j.statusCheckRollup)
   const review = reviewOf(j.reviewDecision)
-  const detail = state === 'OPEN' ? `open · CI ${ci} · ${reviewWords(review)}` : state.toLowerCase()
+  const hasConflicts = String(j.mergeable ?? '').toUpperCase() === 'CONFLICTING'
+  const isBlocked = hasConflicts || ci === 'failing' || ci === 'pending' || review === 'changes requested' || review === 'review required'
+  const stage: Stage = j.isDraft === true ? 'draft' : isBlocked ? 'open' : 'ready'
+  const detail =
+    state === 'OPEN' ? [STAGE_WORDS[stage], hasConflicts ? 'merge conflicts' : '', CI_WORDS[ci], reviewWords(review)].filter(Boolean).join(' · ') : state.toLowerCase()
 
-  return { value: `${state}|${ci}|${review}`, detail, title: String(j.title ?? '').trim(), done: state !== 'OPEN' }
+  return {
+    value: `${state}|${ci}|${review}|${stage}|${hasConflicts ? 'conflict' : ''}`,
+    detail,
+    title: String(j.title ?? '').trim(),
+    done: state !== 'OPEN',
+  }
 }
 
-/** What changed between two values, in words: `CI failing, review approved`, `merged`. */
+/** What changed between two values, in words: `CI failing, approved, ready to merge`, `merged`. */
 export function describeChange(prev: string, next: string): string {
-  const [ps, pc, pr] = prev.split('|')
-  const [ns, nc, nr] = next.split('|')
+  const [ps, pc, pr, pg, pk] = prev.split('|')
+  const [ns, nc, nr, ng, nk] = next.split('|')
   if (ns !== ps && ns !== 'OPEN') return ns === 'MERGED' ? 'merged' : 'closed'
   const parts: string[] = []
   if (ns !== ps) parts.push('reopened')
+  // A value saved before stages existed has no stage to compare.
+  if (pg !== undefined && ng !== undefined && ng !== pg) {
+    if (ng === 'draft') parts.push('back to draft')
+    else if (pg === 'draft' && ng === 'open') parts.push('ready for review')
+  }
+  if (pk !== undefined && nk !== undefined && nk !== pk) parts.push(nk === 'conflict' ? 'merge conflicts' : 'conflicts resolved')
   if (nc !== pc) parts.push(`CI ${nc}`)
   if (nr !== pr) parts.push(reviewWords(nr))
+  if (pg !== undefined && ng === 'ready' && pg !== 'ready') parts.push('ready to merge')
 
   return parts.join(', ') || 'changed'
 }

@@ -48,7 +48,7 @@ import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
-import { addWatch, clearWatches, isExpired, parseWatchArgs, pollable, readPr, stepWatch, WATCH_EVERY_MS, WATCH_HELP } from './watch'
+import { addWatch, clearWatches, isExpired, parseWatchArgs, pollable, PR_FIELDS, readPr, stepWatch, WATCH_EVERY_MS, WATCH_HELP } from './watch'
 
 const PANE = 'dev-dash'
 const TICK_MS = 5000
@@ -565,11 +565,38 @@ async function readGit($: Engine): Promise<GitInfo | null> {
   }
 }
 
+// Run `gh`. The process Claude Code runs in can have an older PATH than the machine: an app that was started
+// before gh was installed keeps its old environment until it is restarted. So if `gh` cannot be started on
+// Windows, try the standard install folder before giving up, and remember whichever worked.
+let ghExe: string | null = null
+
+async function runGh($: Engine, args: string[], timeoutMs: number) {
+  if (ghExe) return $.process.run([ghExe, ...args], { timeoutMs })
+  try {
+    const r = await $.process.run(['gh', ...args], { timeoutMs })
+    ghExe = 'gh'
+
+    return r
+  } catch (err) {
+    const programFiles = ctx.isWindows ? await $.env.get('ProgramFiles') : undefined
+    if (!programFiles) throw err
+    const exe = `${programFiles}\\GitHub CLI\\gh.exe`
+    try {
+      const r = await $.process.run([exe, ...args], { timeoutMs })
+      ghExe = exe
+
+      return r
+    } catch {
+      throw err
+    }
+  }
+}
+
 async function readPrs($: Engine): Promise<PrInfo> {
   try {
-    const r = await $.process.run(
+    const r = await runGh(
+      $,
       [
-        'gh',
         'api',
         'graphql',
         '-f',
@@ -579,7 +606,7 @@ async function readPrs($: Engine): Promise<PrInfo> {
         '-f',
         'review=is:pr is:open review-requested:@me archived:false',
       ],
-      { timeoutMs: 20_000 },
+      20_000,
     )
     if (r.exitCode !== 0) throw new Error(lines(r.stderr)[0] ?? 'gh failed')
     const data = (JSON.parse(r.stdout) as { data?: { mine?: { nodes?: GhPr[] }; review?: { nodes?: GhPr[] } } }).data
@@ -712,7 +739,7 @@ async function loadWatches($: Engine): Promise<WatchRow[]> {
 
 async function readWatch($: Engine, w: WatchRow) {
   try {
-    const r = await $.process.run(['gh', 'pr', 'view', String(w.number), '--repo', w.repo, '--json', 'state,title,reviewDecision,statusCheckRollup'], { timeoutMs: 20_000 })
+    const r = await runGh($, ['pr', 'view', String(w.number), '--repo', w.repo, '--json', PR_FIELDS], 20_000)
     return r.exitCode === 0 ? readPr(JSON.parse(r.stdout)) : null
   } catch {
     return null
@@ -962,7 +989,7 @@ export const register: Register = on => {
     if (!ref.repo) {
       let name = ''
       try {
-        const r = await $.process.run(['gh', 'repo', 'view', '--json', 'nameWithOwner'], { timeoutMs: 15_000 })
+        const r = await runGh($, ['repo', 'view', '--json', 'nameWithOwner'], 15_000)
         if (r.exitCode === 0) name = String((JSON.parse(r.stdout) as { nameWithOwner?: string }).nameWithOwner ?? '')
       } catch {}
       if (!name) return { text: 'I could not tell which repository #' + ref.number + ' is in. Use owner/repo#' + ref.number + ' or the pull request URL.' }
