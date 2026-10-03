@@ -54,6 +54,18 @@ export type SessionRow = {
 
 export type DiskRow = { name: string; freeBytes: number; totalBytes: number }
 
+/** The pane's tabs. */
+export type TabId = 'dashboard' | 'entertainment' | 'custom'
+
+/** What the Spotify app on this machine reports; read locally, never stored or sent anywhere. */
+export type NowPlaying = {
+  /** playing: a track is on; idle: the app is open with nothing playing; closed: not running; unavailable: could not be read here. */
+  state: 'playing' | 'idle' | 'closed' | 'unavailable'
+  /** "Artist - Title" while playing, else ''. */
+  track: string
+  at: number
+}
+
 export type AgentState = 'working' | 'quiet' | 'done' | 'stopped'
 
 export type AgentRow = {
@@ -132,6 +144,8 @@ export type Snapshot = {
   /** Whether this session's dashboard pane is open (the band steps aside). */
   paneOpen: boolean
   disks: DiskRow[]
+  /** Only read while the Entertainment tab is showing; null before the first read. */
+  nowPlaying: NowPlaying | null
   git: GitInfo | null
   prs: PrInfo | null
   updatedAt: number
@@ -155,6 +169,8 @@ declare module 'claude-code' {
       dismissed: string[]
       /** Whether the key list is open in the pane. */
       help: boolean
+      /** The tab showing in the pane. */
+      tab: TabId
     }
   }
 }

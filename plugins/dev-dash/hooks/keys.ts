@@ -16,7 +16,8 @@ export const HELP_KEYS: ReadonlyArray<readonly [string, string]> = [
   ['Enter', 'press the highlighted button; on a row, open its actions'],
   ['Esc', 'give the keyboard back to the prompt'],
   ['ctrl+x tab', 'bring the keyboard back to this pane (or type /dash)'],
-  ['1 – 9', 'fold or unfold a section'],
+  ['1 – 9', 'fold or unfold a section (Dashboard tab)'],
+  ['tab buttons', 'at the top: Dashboard, Entertainment, Custom. Move onto one and press Enter'],
 ]
 
 export const SNOOZE_MS = 15 * 60_000
