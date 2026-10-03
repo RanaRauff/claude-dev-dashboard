@@ -718,10 +718,10 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         await update($, dismissed, () => [])
         return $.ui.toast('Brought back what you snoozed or dismissed')
       },
-      refresh: () => $.command.run({ command: 'dash-refresh', args: '' }),
-      alerts: () => $.command.run({ command: 'dash-alerts', args: '' }),
+      refresh: () => undefined, // taken by the ui.press hook in register.tsx
+      alerts: () => undefined, // taken by the ui.press hook in register.tsx
       help: () => update($, showHelp, v => !v),
-      close: () => $.command.run({ command: 'dash-hide', args: '' }),
+      close: () => undefined, // taken by the ui.press hook in register.tsx
     }
 
     const helpPanel = isHelpOn && (

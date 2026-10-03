@@ -19,6 +19,7 @@ test('keys: /dash opens with the keyboard, j/k move, c copies, s and x mute, u u
   const copied: string[] = []
   const opened: Array<{ id: string; focus?: boolean }> = []
   const toasts: string[] = []
+  const closed: string[] = []
   const unify = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
   const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   const fail = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -36,7 +37,10 @@ test('keys: /dash opens with the keyboard, j/k move, c copies, s and x mute, u u
     opened.push({ id: e.id, focus: e.focus })
     return { value: { id: e.id } }
   })
-  on('ui.close', async () => ({ value: undefined }))
+  on('ui.close', async (_$, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
   on('ui.toast', async (_$, e) => {
     toasts.push(String(e.text))
     return { value: undefined }
@@ -125,6 +129,20 @@ test('keys: /dash opens with the keyboard, j/k move, c copies, s and x mute, u u
   await need(/hide the selected Attention item for 15 minutes/)
   await press('key-help')
   if (await has(/^Keys$/)) throw new Error('help did not close')
+
+  // The commands behind the footer keys answer when run (r refresh, a alerts) and also when typed.
+  const alertsOff = await $.command.run({ command: 'dash-alerts', args: 'off' })
+  expect(alertsOff.text).toBe('Dashboard alerts off.')
+  const alertsToggle = await $.command.run({ command: 'dash-alerts', args: '' })
+  expect(alertsToggle.text).toBe('Dashboard alerts on.')
+  const refreshed = await $.command.run({ command: 'dash-refresh', args: '' })
+  expect(refreshed.text).toMatch(/Dashboard refreshed/)
+  await press('key-alerts')
+  await press('key-refresh')
+
+  // q closes the pane.
+  await press('key-close')
+  expect(closed).toContain('dev-dash')
 
   await ui.unmount()
 })

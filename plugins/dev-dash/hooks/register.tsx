@@ -122,6 +122,7 @@ const ctx = {
   selfId: '',
   dir: '',
   registryDir: '',
+  root: '',
   projectsDir: '',
   isOpen: false,
   ticks: 0,
@@ -619,7 +620,17 @@ async function summarize($: Engine, answer: string) {
   }
 }
 
-async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
+// A refresh that fails must never stop a command from answering or a hook from finishing. The error is
+// written to ~/.claude/dev-dash/last-error.txt (and only the latest), so a failure can be read afterwards.
+async function logError($: Engine, where: string, err: unknown) {
+  try {
+    if (!ctx.root) return
+    const detail = String((err as Error)?.stack ?? err).slice(0, 1500)
+    await $.fs.write(`${ctx.root}/last-error.txt`, `${new Date().toISOString()} ${where}\n${detail}\n`)
+  } catch {}
+}
+
+async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
   const sessions = await readSessions($)
   const agents = await readAgents($, sessions)
   if (sample) await update($, activity, h => pushActivity(h, sessions))
@@ -653,6 +664,14 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
   })
 }
 
+async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
+  try {
+    await publishNow($, gitInfo, sample)
+  } catch (err) {
+    await logError($, 'publish', err)
+  }
+}
+
 async function setState($: Engine, state: SessionState) {
   if (me.state === state) return
   me.state = state
@@ -682,6 +701,14 @@ async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
 }
 
 async function tick($: Engine, withPrs: boolean) {
+  try {
+    await tickNow($, withPrs)
+  } catch (err) {
+    await logError($, 'tick', err)
+  }
+}
+
+async function tickNow($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
   // Only while a turn runs: turn.complete already took the final numbers, and an idle session
@@ -693,12 +720,39 @@ async function tick($: Engine, withPrs: boolean) {
   await publish($, g, true)
 }
 
+// What `a`, `r` and `q` do. The typed commands and the footer keys run the same code. (A plugin cannot run its
+// own slash commands through $.command.run, which skips the calling plugin's hooks, so the keys call these.)
+async function setAlerts($: Engine, arg: string) {
+  const a = arg.trim().toLowerCase()
+  ctx.alertsOn = a === 'on' ? true : a === 'off' ? false : !ctx.alertsOn
+  await $.store.set('alertsOn', ctx.alertsOn).catch(() => undefined)
+  await publish($, undefined)
+
+  return `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.`
+}
+
+async function refreshNow($: Engine) {
+  titleCache.clear()
+  gitCache.clear()
+  await tick($, true)
+
+  return `Dashboard refreshed${ctx.prs?.error ? `; PRs: ${ctx.prs.error}` : ''}.`
+}
+
+async function closePane($: Engine) {
+  ctx.isOpen = false
+  await update($, paneOpen, () => false)
+  await $.ui.close({ id: PANE })
+  await publish($, undefined)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
     ctx.selfId = await $.session.id()
     const home = ((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '').replace(/\\/g, '/')
     const config = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
+    ctx.root = `${config}/dev-dash`
     ctx.dir = `${config}/dev-dash/sessions`
     ctx.registryDir = `${config}/sessions`
     ctx.projectsDir = `${config}/projects`
@@ -837,12 +891,23 @@ export const register: Register = on => {
     }
   })
 
-  on('command.run', { command: 'dash-refresh' }, async $ => {
-    titleCache.clear()
-    gitCache.clear()
-    await tick($, true)
+  on('command.run', { command: 'dash-refresh' }, async $ => ({ text: await refreshNow($) }))
 
-    return { text: `Dashboard refreshed${ctx.prs?.error ? `; PRs: ${ctx.prs.error}` : ''}.` }
+  // The footer keys. The press is taken here, so the Button's own onPress (a no-op) never runs.
+  on('ui.press', { plugin: 'dev-dash', element: 'key-refresh' }, async ($, e) => {
+    await refreshNow($)
+
+    return { element: e.element }
+  })
+  on('ui.press', { plugin: 'dev-dash', element: 'key-alerts' }, async ($, e) => {
+    await setAlerts($, '')
+
+    return { element: e.element }
+  })
+  on('ui.press', { plugin: 'dev-dash', element: 'key-close' }, async ($, e) => {
+    await closePane($)
+
+    return { element: e.element }
   })
 
   // Closed some other way (the pane's own close, or Claude Code itself): stop polling GitHub.
@@ -864,14 +929,7 @@ export const register: Register = on => {
     return { text: `Dashboard line above the prompt ${ctx.bandOn ? 'on' : 'off'}.` }
   })
 
-  on('command.run', { command: 'dash-alerts' }, async ($, e) => {
-    const arg = (e.args ?? '').trim().toLowerCase()
-    ctx.alertsOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.alertsOn
-    await $.store.set('alertsOn', ctx.alertsOn)
-    await publish($, undefined)
-
-    return { text: `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.` }
-  })
+  on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
 
   on('command.run', { command: 'dash' }, async $ => {
     ctx.isOpen = true
@@ -885,10 +943,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-hide' }, async $ => {
-    ctx.isOpen = false
-    await update($, paneOpen, () => false)
-    await $.ui.close({ id: PANE })
-    await publish($, undefined)
+    await closePane($)
 
     return { text: 'Dashboard hidden.' }
   })
