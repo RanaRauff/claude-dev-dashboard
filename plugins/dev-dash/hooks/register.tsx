@@ -683,9 +683,11 @@ async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
 async function pruneHandoffs($: Engine) {
   const entries = await $.fs.list(ctx.handoffDir).catch(() => [])
   for (const name of staleNotes(entries.filter(f => f.kind === 'file').map(f => f.name))) {
-    const path = `${ctx.handoffDir}/${name}`
+    // Run in the notes folder and pass only the bare name (it has matched NOTE_NAME: no spaces, separators,
+    // wildcards or leading dash). Passing a full path through cmd's re-parsing is what could split on a
+    // home directory with a space.
     await $.process
-      .run(ctx.isWindows ? ['cmd', '/c', 'del', '/q', path.replace(/\//g, '\\')] : ['rm', '-f', path], { timeoutMs: 10_000 })
+      .run(ctx.isWindows ? ['cmd', '/c', 'del', '/q', name] : ['rm', '-f', name], { cwd: ctx.handoffDir, timeoutMs: 10_000 })
       .catch(() => undefined)
   }
 }

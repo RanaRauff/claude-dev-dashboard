@@ -78,6 +78,14 @@ describe('retention', () => {
     expect(staleNotes([], 30)).toEqual([])
   })
 
+  test('returns bare names only, never a path, so a delete cannot be pointed anywhere else', () => {
+    const names = [name(1), name(2), 'C:\\Users\\John Smith\\x.md', 'sub/20261003-160000-abcd1234.md', '..\\20261003-160000-abcd1234.md', '-rf', '20261003-160000-ab cd.md']
+    const stale = staleNotes(names, 0)
+    expect(stale).toEqual([name(1), name(2)])
+    for (const n of stale) expect(n).toMatch(/^[0-9][A-Za-z0-9.-]*$/)
+    for (const n of stale) expect(n).not.toMatch(/[\\/ *?"]/)
+  })
+
   test('only ever names files that look like our own notes', () => {
     const names = ['notes.md', '../x.md', 'README.md', '20261003-160000-abcd1234.txt', name(1), name(2)]
     expect(staleNotes(names, 1)).toEqual([name(1)])
