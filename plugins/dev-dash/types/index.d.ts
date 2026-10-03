@@ -9,6 +9,9 @@ export type SourceRow = { at: number; kind: 'fetch' | 'search'; label: string }
 /** A file edited this turn, with lines added and removed versus HEAD. */
 export type ChangedFile = { path: string; added: number; removed: number }
 
+/** The last test run a session started: a runner label (never the command line), whether it passed, and when. */
+export type TestRun = { ok: boolean; at: number; runner: string }
+
 export type SessionRow = {
   id: string
   name: string
@@ -45,6 +48,8 @@ export type SessionRow = {
   sources?: SourceRow[]
   /** Files edited this turn (and not yet committed), with +/- lines. Plugin sessions only. */
   turnFiles?: ChangedFile[]
+  /** The last test run it started, as a pass/fail badge. Plugin sessions only. */
+  lastTest?: TestRun | null
 }
 
 export type DiskRow = { name: string; freeBytes: number; totalBytes: number }

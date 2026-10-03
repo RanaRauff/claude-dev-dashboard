@@ -17,6 +17,7 @@ import type {
   SessionState,
   Snapshot,
   SourceRow,
+  TestRun,
   WorktreeRow,
 } from '../types'
 import {
@@ -46,6 +47,7 @@ import {
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
+import { testRunOf } from './testrun'
 import { pushActivity, registerDashPane } from './render'
 
 const PANE = 'dev-dash'
@@ -150,6 +152,7 @@ const ctx = {
   sources: [] as SourceRow[],
   turnEdits: new Map<string, string>(),
   turnFiles: [] as ChangedFile[],
+  lastTest: null as TestRun | null,
 }
 
 const RISKY_WINDOW_MS = 10 * 60_000
@@ -185,6 +188,7 @@ const me = {
   planAt: 0,
   sources: [] as SourceRow[],
   turnFiles: [] as ChangedFile[],
+  lastTest: null as TestRun | null,
 }
 
 async function git($: Engine, args: string[]) {
@@ -220,6 +224,7 @@ async function heartbeat($: Engine) {
   me.planAt = ctx.planAt
   me.sources = ctx.sources
   me.turnFiles = ctx.turnFiles
+  me.lastTest = ctx.lastTest
   const row: SessionRow = { ...me, costUsd, contextPct, updatedAt: now }
   await $.fs.write(`${ctx.dir}/${ctx.selfId}.json`, JSON.stringify(row)).catch(() => undefined)
 }
@@ -399,6 +404,7 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
       planAt: beat?.planAt ?? 0,
       sources: beat?.sources ?? [],
       turnFiles: beat?.turnFiles ?? [],
+      lastTest: beat?.lastTest ?? null,
     })
   }
   for (const beat of beats.values()) {
@@ -841,14 +847,21 @@ export const register: Register = on => {
     if (source) ctx.sources = addSource(ctx.sources, source)
 
     let isOk = false
+    let wasCut = false
     try {
       const ran = await next(e)
       const shape = ran as { deny?: string; isError?: boolean; result?: { interrupted?: boolean } }
       isOk = !shape.deny && !shape.isError && !shape.result?.interrupted
+      wasCut = !!shape.deny || !!shape.result?.interrupted
       return ran
     } finally {
       ctx.calls = [...ctx.calls, { key: callKey(e.tool, input), label: stepLabel(e.tool, input), isOk, at: Date.now() }].slice(-20)
       me.stuck = stuckReason(ctx.calls)
+      // A test run's outcome. The result has no exit code field; a failing command comes back as an error.
+      // A call that was denied or interrupted never finished a run, so it leaves the badge alone.
+      if ((e.tool === 'Bash' || e.tool === 'PowerShell') && typeof input.command === 'string' && !wasCut) {
+        ctx.lastTest = testRunOf(input.command, isOk, Date.now()) ?? ctx.lastTest
+      }
     }
   })
 
