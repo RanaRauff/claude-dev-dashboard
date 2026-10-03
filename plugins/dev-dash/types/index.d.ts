@@ -26,6 +26,8 @@ export type SessionRow = {
   ctxTrend: number[]
   /** Share of input tokens read from the prompt cache on its last turn, 0-100. Plugin sessions only. */
   cacheHitPct: number | null
+  /** One line on what the session is doing, written after each turn when summaries are on ('' otherwise). Plugin sessions only. */
+  summary: string
 }
 
 export type DiskRow = { name: string; freeBytes: number; totalBytes: number }
@@ -103,6 +105,8 @@ export type Snapshot = {
   alertsOn: boolean
   /** Whether the one-line band above the prompt is on. */
   bandOn: boolean
+  /** Whether this session writes a one-line summary after each turn (costs a small model call per turn). */
+  summariesOn: boolean
   /** Whether this session's dashboard pane is open (the band steps aside). */
   paneOpen: boolean
   disks: DiskRow[]

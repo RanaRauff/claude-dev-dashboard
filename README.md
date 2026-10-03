@@ -48,6 +48,12 @@ dev-dash shows a short toast, with a soft chime, when something needs you: a ses
 
 The chime plays where Claude Code has an audio player: macOS terminals and the desktop app. Windows and Linux terminals stay silent. Risky commands are only flagged, never blocked.
 
+## Session summaries (opt-in)
+
+`/dash-summaries on` makes each session that runs dev-dash write a short label after every finished turn, e.g. `↳ Fixing the login redirect bug`, shown under it in the Sessions section. Each label is **one small Haiku call per finished turn** through your own Claude Code session (a few hundred input tokens, at most 40 output), so it uses a little of your usage. It's off by default, and `/dash-summaries off` clears the labels.
+
+What's sent to the model is your last prompt (first 300 characters), the last few tool steps, and the start of Claude's reply (first 500 characters). The label is stored in your session's status file in `~/.claude/dev-dash/sessions/`. Sessions that don't run dev-dash have no label.
+
 ## Install
 
 The plugin is built on Claude Code's mods (function hooks) API, which is in **early access** and may change between releases.
@@ -63,6 +69,7 @@ Then, in any session:
 - `/dash-hide` closes it
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
+- `/dash-summaries on|off` adds a one-line "what is it doing" under each session (off by default, see below)
 - `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
 
 ### Requirements
@@ -83,10 +90,10 @@ Mods run with Claude Code's access to your machine, so here is everything this o
 - `git` in your working directories, `tasklist` (Windows) or `ps` to see which sessions are still alive, `gh api graphql` for your PRs, and once a minute PowerShell `Get-PSDrive` (Windows) or `df -Pk` for free disk space.
 
 **Writes**
-- `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, cost, context use and its per-turn trend, cache hit rate, latest step, a stuck flag, a risky-command flag (the pattern name, not the command), and the files it edited in the last 30 minutes.
-- Its own plugin store (only the alerts and band on/off choices).
+- `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, its one-line summary (only if summaries are on), cost, context use and its per-turn trend, cache hit rate, latest step, a stuck flag, a risky-command flag (the pattern name, not the command), and the files it edited in the last 30 minutes.
+- Its own plugin store (only the alerts, band and summaries on/off choices).
 
-**Network:** only the `gh` call to GitHub. Nothing else leaves your machine.
+**Network:** the `gh` call to GitHub and, only if you turn summaries on, one small model call per finished turn through your own Claude Code session. Nothing else leaves your machine.
 
 `CLAUDE_CONFIG_DIR` is honoured if you have moved Claude's config directory. The session registry and transcript formats are internal to Claude Code and may change between releases.
 

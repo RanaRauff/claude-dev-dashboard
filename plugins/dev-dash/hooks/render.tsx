@@ -346,6 +346,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             <Text inverse color={STATE_TONE[r.state]}>{STATE_BADGE[r.state]}</Text>
             <Text bold={isSelf} wrap="truncate-end"> {head}</Text>
           </Box>
+          {r.summary && (
+            <Box paddingLeft={7}>
+              <Text color={TONE.info} wrap="truncate-end">↳ {cut(r.summary, W - 10)}</Text>
+            </Box>
+          )}
           {hasCtx ? (
             <Box flexDirection="row" paddingLeft={7}>
               <Text color={ctxTone(r.contextPct ?? 0)}>{bar(r.contextPct ?? 0, L.barCells)} </Text>
@@ -376,6 +381,9 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         {!folded.includes('sessions') && (
           <Box flexDirection="column" paddingLeft={2}>
             {s.sessions.length === 0 && <Text dimColor>No live Claude sessions.</Text>}
+            {s.sessions.length > 0 && !s.summariesOn && !s.sessions.some(r => r.summary) && (
+              <Text dimColor wrap="truncate-end">/dash-summaries on adds a one-line "doing" per session</Text>
+            )}
             {s.sessions.slice(0, L.sessionRows).map(sessionRow)}
             {s.sessions.length > L.sessionRows && <Text dimColor>+{s.sessions.length - L.sessionRows} more</Text>}
           </Box>

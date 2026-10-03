@@ -35,7 +35,10 @@ import {
   runwayMs,
   stepLabel,
   stuckReason,
+  SUMMARY_SYSTEM,
   summarizeAgent,
+  summaryPrompt,
+  tidySummary,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { pushActivity, registerDashPane } from './render'
@@ -126,6 +129,9 @@ const ctx = {
   calls: [] as CallMark[],
   edits: new Map<string, number>(),
   bandOn: true,
+  summariesOn: false,
+  isSummarizing: false,
+  lastPrompt: '',
   risky: null as { label: string; at: number } | null,
   ctxTrend: [] as number[],
   cacheHit: null as number | null,
@@ -162,6 +168,7 @@ const me = {
   risky: '',
   ctxTrend: [] as number[],
   cacheHitPct: null as number | null,
+  summary: '',
 }
 
 async function git($: Engine, args: string[]) {
@@ -367,6 +374,7 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
       risky: beat?.risky ?? '',
       ctxTrend: beat?.ctxTrend ?? [],
       cacheHitPct: beat?.cacheHitPct ?? null,
+      summary: beat?.summary ?? '',
     })
   }
   for (const beat of beats.values()) {
@@ -563,6 +571,30 @@ async function readPrs($: Engine): Promise<PrInfo> {
   }
 }
 
+// One small model call after a finished turn; the label is written to this session's status file.
+async function summarize($: Engine, answer: string) {
+  if (!ctx.summariesOn || ctx.isSummarizing) return
+  ctx.isSummarizing = true
+  try {
+    const r = await $.model.complete({
+      model: 'haiku',
+      system: SUMMARY_SYSTEM,
+      prompt: summaryPrompt(ctx.lastPrompt, answer, ctx.calls.map(c => c.label)),
+      maxTokens: 40,
+      timeoutMs: 20_000,
+    })
+    if (r.isAnswered) {
+      me.summary = tidySummary(r.text)
+      await heartbeat($)
+      await publish($, undefined)
+    }
+  } catch {
+    // A failed label is not worth an alert; the next turn tries again.
+  } finally {
+    ctx.isSummarizing = false
+  }
+}
+
 async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = false) {
   const sessions = await readSessions($)
   const agents = await readAgents($, sessions)
@@ -583,6 +615,7 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
       events: ctx.events,
       alertsOn: ctx.alertsOn,
       bandOn: ctx.bandOn,
+      summariesOn: ctx.summariesOn,
       paneOpen: ctx.isOpen,
       disks: ctx.disks,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
@@ -635,6 +668,9 @@ export const register: Register = on => {
     if (typeof stored === 'boolean') ctx.alertsOn = stored
     const storedBand = await $.store.get('bandOn').catch(() => undefined)
     if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    await $.command.register({ name: 'dash-summaries', description: 'Write a one-line summary per session after each turn (on | off; uses a small model call per turn)' })
+    const storedSummaries = await $.store.get('summariesOn').catch(() => undefined)
+    if (typeof storedSummaries === 'boolean') ctx.summariesOn = storedSummaries
     await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
@@ -672,8 +708,30 @@ export const register: Register = on => {
       note($, { at: Date.now(), tone: 'ok', text: `this session finished a ${Math.round(e.durationMs / 60_000)}m task` }, true)
     }
     await setState($, 'idle')
+    if (!e.agentId && !e.isAborted) void summarize($, e.answer)
 
     return ran
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    ctx.lastPrompt = e.text
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'dash-summaries' }, async ($, e) => {
+    const arg = (e.args ?? '').trim().toLowerCase()
+    ctx.summariesOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.summariesOn
+    await $.store.set('summariesOn', ctx.summariesOn)
+    if (!ctx.summariesOn) me.summary = ''
+    await heartbeat($)
+    await publish($, undefined)
+
+    return {
+      text: ctx.summariesOn
+        ? 'Session summaries on: one small Haiku call after each finished turn. Turn off with /dash-summaries off.'
+        : 'Session summaries off.',
+    }
   })
 
   on('tool.check', async ($, e, next) => {
