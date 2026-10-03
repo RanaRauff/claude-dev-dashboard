@@ -47,6 +47,7 @@ import {
   tidySummary,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
+import { runExe as runExeWith } from './exe'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
@@ -224,34 +225,21 @@ const WINDOWS_INSTALLS: Record<'git' | 'gh', (programFiles: string) => string[]>
 }
 const exeFound = new Map<string, string>()
 
-async function runExe($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: number) {
-  const known = exeFound.get(name)
-  if (known) {
-    try {
-      return await $.process.run([known, ...args], { timeoutMs })
-    } catch {
-      exeFound.delete(name)
-    }
-  }
-  try {
-    const r = await $.process.run([name, ...args], { timeoutMs })
-    exeFound.set(name, name)
+// The lookup logic is in exe.ts (it tells a timeout from a program that is not there by how long the call ran, since
+// the API gives no wording for either); this wires it to the engine.
+const runExe = ($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: number) =>
+  runExeWith({
+    run: (argv, timeout) => $.process.run(argv, { timeoutMs: timeout }),
+    name,
+    args,
+    timeoutMs,
+    found: exeFound,
+    fallbacks: async () => {
+      const programFiles = (await $.env.get('OS')) === 'Windows_NT' ? await $.env.get('ProgramFiles') : undefined
 
-    return r
-  } catch (err) {
-    const programFiles = (await $.env.get('OS')) === 'Windows_NT' ? await $.env.get('ProgramFiles') : undefined
-    if (!programFiles) throw err
-    for (const exe of WINDOWS_INSTALLS[name](programFiles)) {
-      try {
-        const r = await $.process.run([exe, ...args], { timeoutMs })
-        exeFound.set(name, exe)
-
-        return r
-      } catch {}
-    }
-    throw err
-  }
-}
+      return programFiles ? WINDOWS_INSTALLS[name](programFiles) : []
+    },
+  })
 
 async function git($: Engine, args: string[]) {
   try {
