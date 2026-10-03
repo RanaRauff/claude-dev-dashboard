@@ -8,6 +8,8 @@ import {
   parseDf,
   parseWindowsDisks,
   riskyReason,
+  summaryPrompt,
+  tidySummary,
   changesBetween,
   collisionsOf,
   crossedSteps,
@@ -42,6 +44,7 @@ const session = (over: Partial<SessionRow>): SessionRow => ({
   risky: '',
   ctxTrend: [],
   cacheHitPct: null,
+  summary: '',
   ...over,
 })
 
@@ -224,5 +227,22 @@ describe('risky events', () => {
       ['Cleanup ran a risky command: git push --force', true],
     ])
     expect(changesBetween(remember(after, [], null), after, [], null, 'self', NOW, false)).toEqual([])
+  })
+})
+
+describe('session summaries', () => {
+  test('the prompt is small and carries request, steps and reply', () => {
+    const p = summaryPrompt('Fix the login redirect', 'Done. I changed auth.ts so the redirect keeps the query string.', ['Read: auth.ts', 'Edit: auth.ts', 'Bash: npm test'])
+    expect(p).toContain('Request: Fix the login redirect')
+    expect(p).toContain('Read: auth.ts; Edit: auth.ts; Bash: npm test')
+    expect(p).toContain('Reply: Done. I changed auth.ts')
+    expect(summaryPrompt('x'.repeat(5000), 'y'.repeat(5000), []).length).toBeLessThan(1200)
+  })
+
+  test('tidy keeps one clean line', () => {
+    expect(tidySummary('"Fixing the login redirect bug."')).toBe('Fixing the login redirect bug')
+    expect(tidySummary('Status: **Refactoring the auth module**\nextra words')).toBe('Refactoring the auth module')
+    expect(tidySummary('')).toBe('')
+    expect(tidySummary('word '.repeat(40), 30).length).toBe(30)
   })
 })

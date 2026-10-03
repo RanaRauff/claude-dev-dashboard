@@ -304,3 +304,84 @@ test('shows plan progress, sources and files changed from session heartbeats', {
   await has(/login\.ts/)
   await ui.unmount()
 })
+
+test('summaries: off by default, on writes a one-line label after a finished turn', { timeoutMs: 15_000 }, async ($, on) => {
+  const now = Date.now()
+  const files = new Map<string, string>([
+    ['/cfg/sessions/100.json', JSON.stringify({ pid: 100, sessionId: 'self', cwd: '/w/web', startedAt: now - 60_000, name: 'web work', entrypoint: 'cli', status: 'busy' })],
+  ])
+  const prompts: string[] = []
+  const store = new Map<string, unknown>()
+  const none = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  const unify = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
+
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  on('turn.complete', async () => ({ text: '' }))
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', async () => ({ value: 'self' }))
+  on('session.cwd', async () => ({ value: '/w/web' }))
+  on('session.usage', async () => ({ value: { startedAt: now - 60_000, context: { window: 200_000, percent: 40 }, rateLimits: [], cost: { usd: 0.1 } } }))
+  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
+  on('command.register', async () => ({ value: undefined }))
+  on('clock.every', async () => ({ value: undefined }))
+  on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('store.get', async (_$, e) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('process.run', async (_$, e) => ({ value: e.argv[0] === 'tasklist' ? { exitCode: 0, stdout: '"claude.exe","100","Console","5","1 K"\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } : none.value }))
+  on('fs.write', async (_$, e) => {
+    files.set(unify(e.path), e.text)
+    return { value: undefined }
+  })
+  on('fs.list', async (_$, e) => {
+    const dir = `${unify(e.path)}/`
+    const names = [...files.keys()].filter(p => p.startsWith(dir) && !p.slice(dir.length).includes('/'))
+    return { value: names.map(p => ({ name: p.slice(dir.length), kind: 'file' as const, size: 1, mtimeMs: now, isLink: false })) }
+  })
+  on('fs.stat', async () => {
+    throw new Error('ENOENT')
+  })
+  on('fs.read', async (_$, e) => ({ value: files.get(unify(e.path)) ?? '' }))
+  on('model.complete', async (_$, e) => {
+    prompts.push(e.prompt)
+    return { value: { isAnswered: true, text: '"Fixing the login redirect bug."', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }
+  })
+
+  await $.session.start({ cwd: '/w/web', surface: 'terminal', isInteractive: true })
+
+  // Off by default: a finished turn makes no model call.
+  await $.prompt.submit({ text: 'fix the login redirect' })
+  const done = { answer: 'Changed auth.ts to keep the query string.', durationMs: 5000, isAborted: false, turnId: 't1', reason: 'answer' } as const
+  await $.turn.complete(done as never)
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(prompts.length).toBe(0)
+
+  const on1 = await $.command.run({ command: 'dash-summaries', args: 'on' })
+  expect(on1.text).toMatch(/summaries on/i)
+  await $.prompt.submit({ text: 'fix the login redirect' })
+  await $.turn.complete(done as never)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('Request: fix the login redirect')
+  expect(prompts[0]).toContain('Changed auth.ts')
+  const beat = JSON.parse(files.get('/cfg/dev-dash/sessions/self.json') ?? '{}') as { summary?: string }
+  expect(beat.summary).toBe('Fixing the login redirect bug')
+
+  await $.command.run({ command: 'dash', args: '' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  const ui = await $.ui.mount({
+    plugin: 'dev-dash',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'dev-dash',
+    viewport: { columns: 80, rows: 40 },
+    props: { title: 'Dev dashboard', isFocused: false, bodyColumns: 78, placement: 'dock' },
+  })
+  if (!(await ui.find({ type: 'Text', text: /↳ Fixing the login redirect bug/ }))) throw new Error('summary not drawn')
+  await ui.unmount()
+
+  await $.command.run({ command: 'dash-summaries', args: 'off' })
+  expect(JSON.parse(files.get('/cfg/dev-dash/sessions/self.json') ?? '{}').summary).toBe('')
+})

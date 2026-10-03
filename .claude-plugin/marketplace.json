@@ -12,7 +12,7 @@
       "name": "dev-dash",
       "source": "./plugins/dev-dash",
       "description": "Developer dashboard pane: what needs you, every Claude session and subagent, usage limits, git and PRs",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "license": "MIT",
       "keywords": [
         "dashboard",

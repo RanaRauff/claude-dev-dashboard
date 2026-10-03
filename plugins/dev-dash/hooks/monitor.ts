@@ -344,3 +344,34 @@ export const bytes = (n: number) => {
 
 /** A task counts as long, worth a ping when it ends, after this long running. */
 export const LONG_TASK_MS = 5 * 60_000
+
+// ---------------------------------------------------------------------------
+// One-line session summaries (opt-in: one small model call per finished turn)
+// ---------------------------------------------------------------------------
+const squash = (s: string) => s.replace(/\s+/g, ' ').trim()
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+export const SUMMARY_SYSTEM =
+  'You write one-line status labels for a developer dashboard. Reply with the label only: no quotes, no markdown, no preamble.'
+
+/** The prompt for the label. Inputs are clipped, so a call stays small (a few hundred tokens). */
+export const summaryPrompt = (request: string, answer: string, steps: readonly string[]) =>
+  [
+    'A coding assistant session just finished a turn. In at most 12 words, present tense, say what the session is working on.',
+    `Request: ${clip(squash(request), 300) || '(none)'}`,
+    `Latest steps: ${steps.slice(-5).map(s => clip(squash(s), 60)).join('; ') || '(none)'}`,
+    `Reply: ${clip(squash(answer), 500) || '(none)'}`,
+  ].join('\n')
+
+/** Cleans the model's reply into one short line; '' when nothing usable. */
+export const tidySummary = (text: string, max = 80): string => {
+  const line = (text.split(/\r?\n/).find(l => l.trim()) ?? '')
+    .replace(/^[\s>*#\-"'`“‘]+/, '')
+    .replace(/[\s"'`”’]+$/, '')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/^(status|label|summary)\s*:\s*/i, '')
+    .replace(/\.$/, '')
+  const out = squash(line)
+
+  return out.length > max ? `${out.slice(0, max - 1)}…` : out
+}
