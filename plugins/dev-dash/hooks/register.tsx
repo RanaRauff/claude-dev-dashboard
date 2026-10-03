@@ -4,6 +4,7 @@ import type { Engine, Register } from 'claude-code'
 import type {
   AgentRow,
   BranchRow,
+  DiskRow,
   CiState,
   EventRow,
   GitInfo,
@@ -17,13 +18,20 @@ import type {
 } from '../types'
 import {
   agentStateOf,
+  bytes,
+  cacheHitPct,
   callKey,
   changesBetween,
   crossedSteps,
   emptySeen,
+  isDiskLow,
   limitLabel,
+  LONG_TASK_MS,
+  parseDf,
   parseShortstat,
+  parseWindowsDisks,
   remember,
+  riskyReason,
   runwayMs,
   stepLabel,
   stuckReason,
@@ -116,7 +124,18 @@ const ctx = {
   lastContextPct: null as number | null,
   calls: [] as CallMark[],
   edits: new Map<string, number>(),
+  bandOn: true,
+  risky: null as { label: string; at: number } | null,
+  ctxTrend: [] as number[],
+  cacheHit: null as number | null,
+  disks: [] as DiskRow[],
+  lowDisks: new Set<string>(),
+  isWindows: false,
 }
+
+const RISKY_WINDOW_MS = 10 * 60_000
+const DISK_EVERY_TICKS = 12
+const SOUND = { asset: 'sounds/chime.wav' }
 
 const EVENTS_KEPT = 30
 const EDIT_WINDOW_MS = 30 * 60_000
@@ -139,6 +158,9 @@ const me = {
   lastTool: '',
   stuck: '',
   editing: [] as string[],
+  risky: '',
+  ctxTrend: [] as number[],
+  cacheHitPct: null as number | null,
 }
 
 async function git($: Engine, args: string[]) {
@@ -167,6 +189,9 @@ async function heartbeat($: Engine) {
   if (contextPct !== null) ctx.lastContextPct = contextPct
   for (const [file, at] of ctx.edits) if (now - at > EDIT_WINDOW_MS) ctx.edits.delete(file)
   me.editing = [...ctx.edits.keys()]
+  me.risky = ctx.risky && now - ctx.risky.at < RISKY_WINDOW_MS ? ctx.risky.label : ''
+  me.ctxTrend = ctx.ctxTrend
+  me.cacheHitPct = ctx.cacheHit
   const row: SessionRow = { ...me, costUsd, contextPct, updatedAt: now }
   await $.fs.write(`${ctx.dir}/${ctx.selfId}.json`, JSON.stringify(row)).catch(() => undefined)
 }
@@ -338,6 +363,9 @@ async function readSessions($: Engine): Promise<SessionRow[]> {
       updatedAt: beat?.updatedAt ?? reg.updatedAt ?? reg.startedAt,
       stuck: beat?.stuck ?? '',
       editing: beat?.editing ?? [],
+      risky: beat?.risky ?? '',
+      ctxTrend: beat?.ctxTrend ?? [],
+      cacheHitPct: beat?.cacheHitPct ?? null,
     })
   }
   for (const beat of beats.values()) {
@@ -365,7 +393,43 @@ function trackLimits(readings: ReadonlyArray<{ kind: string; percentUsed: number
 
 function note($: Engine, event: EventRow, isAlert: boolean) {
   ctx.events = [event, ...ctx.events].slice(0, EVENTS_KEPT)
-  if (isAlert && ctx.alertsOn) $.ui.toast(event.text, { timeoutMs: 6000 })
+  if (isAlert && ctx.alertsOn) {
+    $.ui.toast(event.text, { timeoutMs: 6000 })
+    // Plays where the host has a player (macOS terminals, the desktop app); silent elsewhere.
+    void $.audio.play(SOUND).catch(() => undefined)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Disk space, once a minute
+// ---------------------------------------------------------------------------
+async function readDisks($: Engine) {
+  try {
+    const r = ctx.isWindows
+      ? await $.process.run(
+          [
+            'powershell',
+            '-NoProfile',
+            '-Command',
+            'Get-PSDrive -PSProvider FileSystem | ForEach-Object { "$($_.Name) $([int64]$_.Free) $([int64]$_.Used)" }',
+          ],
+          { timeoutMs: 15_000 },
+        )
+      : await $.process.run(['df', '-Pk'], { timeoutMs: 10_000 })
+    if (r.exitCode !== 0) return
+    ctx.disks = ctx.isWindows ? parseWindowsDisks(r.stdout) : parseDf(r.stdout)
+  } catch {
+    return
+  }
+  const now = Date.now()
+  for (const d of ctx.disks) {
+    const isLow = isDiskLow(d)
+    if (isLow && !ctx.lowDisks.has(d.name)) {
+      note($, { at: now, tone: 'bad', text: `disk ${d.name} is low: ${bytes(d.freeBytes)} free` }, true)
+    }
+    if (isLow) ctx.lowDisks.add(d.name)
+    else ctx.lowDisks.delete(d.name)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +581,9 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
       limits: ctx.limits,
       events: ctx.events,
       alertsOn: ctx.alertsOn,
+      bandOn: ctx.bandOn,
+      paneOpen: ctx.isOpen,
+      disks: ctx.disks,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       updatedAt: Date.now(),
@@ -538,6 +605,7 @@ async function tick($: Engine, withPrs: boolean) {
   if (g) me.branch = g.branch
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
+  if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
   await publish($, g, true)
 }
 
@@ -561,8 +629,12 @@ export const register: Register = on => {
     await $.command.register({ name: 'dash', description: 'Open the developer dashboard pane' })
     await $.command.register({ name: 'dash-hide', description: 'Hide the developer dashboard pane' })
     await $.command.register({ name: 'dash-alerts', description: 'Turn dashboard toasts on or off (on | off, or toggle)' })
+    await $.command.register({ name: 'dash-band', description: 'Show or hide the dev-dash line above the prompt (on | off, or toggle)' })
     const stored = await $.store.get('alertsOn').catch(() => undefined)
     if (typeof stored === 'boolean') ctx.alertsOn = stored
+    const storedBand = await $.store.get('bandOn').catch(() => undefined)
+    if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
     await tick($, false)
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1
@@ -587,6 +659,14 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
+    ctx.cacheHit = cacheHitPct(e.usage) ?? ctx.cacheHit
+    try {
+      const pct = (await $.session.usage()).context.percent
+      if (typeof pct === 'number') ctx.ctxTrend = [...ctx.ctxTrend, Math.round(pct)].slice(-12)
+    } catch {}
+    if (!e.agentId && e.durationMs >= LONG_TASK_MS) {
+      note($, { at: Date.now(), tone: 'ok', text: `this session finished a ${Math.round(e.durationMs / 60_000)}m task` }, true)
+    }
     await setState($, 'idle')
 
     return ran
@@ -609,6 +689,10 @@ export const register: Register = on => {
       return r
     }
     await setState($, 'running')
+    if ((e.tool === 'Bash' || e.tool === 'PowerShell') && typeof input.command === 'string') {
+      const label = riskyReason(input.command)
+      if (label) ctx.risky = { label, at: Date.now() }
+    }
     if (['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) {
       const file = input.file_path ?? input.notebook_path
       if (typeof file === 'string') ctx.edits.set(normPath(file), Date.now())
@@ -626,6 +710,15 @@ export const register: Register = on => {
     }
   })
 
+  on('command.run', { command: 'dash-band' }, async ($, e) => {
+    const arg = (e.args ?? '').trim().toLowerCase()
+    ctx.bandOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.bandOn
+    await $.store.set('bandOn', ctx.bandOn)
+    await publish($, undefined)
+
+    return { text: `Dashboard line above the prompt ${ctx.bandOn ? 'on' : 'off'}.` }
+  })
+
   on('command.run', { command: 'dash-alerts' }, async ($, e) => {
     const arg = (e.args ?? '').trim().toLowerCase()
     ctx.alertsOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.alertsOn
@@ -638,6 +731,7 @@ export const register: Register = on => {
   on('command.run', { command: 'dash' }, async $ => {
     ctx.isOpen = true
     await $.ui.open({ id: PANE, title: 'Dev dashboard' })
+    if (ctx.disks.length === 0) void readDisks($)
     void tick($, true)
 
     return { text: 'Dashboard opened.' }
@@ -646,6 +740,7 @@ export const register: Register = on => {
   on('command.run', { command: 'dash-hide' }, async $ => {
     ctx.isOpen = false
     await $.ui.close({ id: PANE })
+    await publish($, undefined)
 
     return { text: 'Dashboard hidden.' }
   })

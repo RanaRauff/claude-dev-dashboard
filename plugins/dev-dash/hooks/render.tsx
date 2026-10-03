@@ -13,8 +13,8 @@
 import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
-import type { AgentRow, AgentState, CiState, DashSection, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
-import { collisionsOf } from './monitor'
+import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
+import { bytes, collisionsOf, isDiskLow } from './monitor'
 
 export const PANE = 'dev-dash'
 
@@ -103,12 +103,14 @@ const toggle = (list: readonly DashSection[] | undefined, id: DashSection) =>
 export const attentionOf = (s: Snapshot) => {
   const waiting = s.sessions.filter(r => r.state === 'waiting')
   const stuck = s.sessions.filter(r => r.stuck)
+  const risky = s.sessions.filter(r => r.risky)
+  const disks = (s.disks ?? []).filter(isDiskLow)
   const collisions = collisionsOf(s.sessions)
   const limits = (s.limits ?? []).filter(l => l.pct >= 90 || isLimitAtRisk(l, Date.now()))
   const failing = (s.prs?.mine ?? []).filter(p => p.ci === 'failing' || p.conflicts)
   const reviews = s.prs?.toReview ?? []
-  const urgent = waiting.length + stuck.length + collisions.length + limits.length + failing.length
-  return { waiting, stuck, collisions, limits, failing, reviews, urgent, total: urgent + reviews.length }
+  const urgent = waiting.length + stuck.length + risky.length + collisions.length + limits.length + disks.length + failing.length
+  return { waiting, stuck, risky, collisions, limits, disks, failing, reviews, urgent, total: urgent + reviews.length }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +262,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
               ? [
                   att.waiting.length ? `${att.waiting.length} waiting` : '',
                   att.stuck.length ? `${att.stuck.length} stuck` : '',
+                  att.risky.length ? `${att.risky.length} risky` : '',
+                  att.disks.length ? 'disk' : '',
                   att.collisions.length ? `${att.collisions.length} clash` : '',
                   att.limits.length ? 'limit' : '',
                   att.failing.length ? `${att.failing.length} failing` : '',
@@ -286,6 +290,16 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             {att.stuck.map(r => (
               <Text color={TONE.bad} wrap="truncate-end">
                 ⟳ {cut(r.name || where(r), W - 30)} may be stuck · {r.stuck}
+              </Text>
+            ))}
+            {att.risky.map(r => (
+              <Text color={TONE.bad} wrap="truncate-end">
+                ⚡ {cut(r.name || where(r), W - 30)} ran {r.risky}
+              </Text>
+            ))}
+            {att.disks.map(d => (
+              <Text color={TONE.bad} wrap="truncate-end">
+                ▼ disk {d.name} low · {bytes(d.freeBytes)} free of {bytes(d.totalBytes)}
               </Text>
             ))}
             {att.collisions.map(c => (
@@ -450,13 +464,38 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
               </Box>
             ))}
             {withCtx.length > 0 && <Text dimColor>context</Text>}
-            {withCtx.map(r => (
-              <Box flexDirection="row">
-                <Text>{'  '}</Text>
-                <Text color={ctxTone(r.contextPct ?? 0)}>{bar(r.contextPct ?? 0, L.barCells)} {String(Math.round(r.contextPct ?? 0)).padStart(3)}% </Text>
-                <Text dimColor wrap="truncate-end">{cut(r.name || where(r), W - L.barCells - 14)}</Text>
-              </Box>
-            ))}
+            {withCtx.map(r => {
+              const trend = (r.ctxTrend ?? []).length > 1 ? sparkline(r.ctxTrend, isNarrow ? 6 : 12) : ''
+              const cache = r.cacheHitPct !== null && r.cacheHitPct !== undefined ? `cache ${r.cacheHitPct}%` : ''
+              return (
+                <Box flexDirection="column">
+                  <Box flexDirection="row">
+                    <Text>{'  '}</Text>
+                    <Text color={ctxTone(r.contextPct ?? 0)}>{bar(r.contextPct ?? 0, L.barCells)} {String(Math.round(r.contextPct ?? 0)).padStart(3)}% </Text>
+                    <Text dimColor wrap="truncate-end">{cut(r.name || where(r), W - L.barCells - 14)}</Text>
+                  </Box>
+                  {(trend || cache) && (
+                    <Box flexDirection="row" paddingLeft={2}>
+                      {trend && <Text color={TONE.info}>{trend} </Text>}
+                      <Text dimColor>{[trend ? 'per turn' : '', cache].filter(Boolean).join(' · ')}</Text>
+                    </Box>
+                  )}
+                </Box>
+              )
+            })}
+            {(s.disks ?? []).length > 0 && <Text dimColor>disk</Text>}
+            {(s.disks ?? []).slice(0, 4).map((d: DiskRow) => {
+              const used = 100 - (d.freeBytes / d.totalBytes) * 100
+              return (
+                <Box flexDirection="row">
+                  <Text>{'  '}{cut(d.name, 8).padEnd(isNarrow ? 3 : 9)} </Text>
+                  <Text color={isDiskLow(d) ? TONE.bad : used >= 80 ? TONE.warn : TONE.ok}>
+                    {bar(used, L.barCells)} {String(Math.round(used)).padStart(3)}%{' '}
+                  </Text>
+                  <Text dimColor>{bytes(d.freeBytes)} free</Text>
+                </Box>
+              )
+            })}
             <Box flexDirection="row" marginTop={0}>
               <Text dimColor>events </Text>
               <Button
@@ -622,6 +661,54 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         {work}
         {prSection}
         {footer}
+      </Box>
+    )
+  })
+  // ---- The band above the prompt: one line, there while the pane is closed ----
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const s = await read($, snap)
+    if (!s || !s.bandOn || s.paneOpen || e.props.hasSurvey) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const now = Date.now()
+    const W = Math.max(30, e.props.bodyColumns)
+    const att = attentionOf(s)
+    const name = (r: SessionRow) => r.name || where(r)
+
+    // The single most urgent thing, in the same order as the Attention section.
+    const first =
+      att.waiting[0] ? `${name(att.waiting[0])} · ${att.waiting[0].waitingFor || 'waiting'} ${ago(now - att.waiting[0].stateSince)}`
+      : att.stuck[0] ? `${name(att.stuck[0])} may be stuck`
+      : att.risky[0] ? `${name(att.risky[0])} ran ${att.risky[0].risky}`
+      : att.collisions[0] ? `${att.collisions[0].sessions.join(' + ')} editing the same file`
+      : att.limits[0] ? `${att.limits[0].kind} limit ${limitNote(att.limits[0], now)}`
+      : att.disks[0] ? `disk ${att.disks[0].name} low`
+      : att.failing[0] ? `#${att.failing[0].number} ${att.failing[0].conflicts ? 'conflicts' : 'CI failing'}`
+      : ''
+    const lead =
+      att.urgent > 0 ? { text: `◆ ${att.urgent} need${att.urgent === 1 ? 's' : ''} you`, tone: TONE.warn }
+      : att.reviews.length > 0 ? { text: `◎ ${plural(att.reviews.length, 'review')} waiting`, tone: TONE.info }
+      : { text: '✓ all clear', tone: TONE.ok }
+
+    const self = s.sessions.find(r => r.id === s.selfId)
+    const running = s.sessions.filter(r => r.state === 'running').length
+    const agentsBusy = (s.agents ?? []).filter(a => a.state === 'working' || a.state === 'quiet').length
+    const facts: Array<{ text: string; tone?: string }> = [
+      ...(s.limits ?? []).map(l => ({ text: `${l.kind} ${Math.round(l.pct)}%`, tone: limitTone(l, now) })),
+      ...(self?.contextPct !== null && self?.contextPct !== undefined ? [{ text: `ctx ${Math.round(self.contextPct)}%`, tone: ctxTone(self.contextPct) }] : []),
+      ...(running > 0 ? [{ text: `● ${running} running`, tone: TONE.ok }] : []),
+      ...(agentsBusy > 0 ? [{ text: `◐ ${plural(agentsBusy, 'agent')}`, tone: TONE.accent }] : []),
+    ]
+    const room = W - lead.text.length - 9
+    const detail = first ? cut(first, Math.max(0, Math.min(room - 30, 60))) : ''
+
+    return (
+      <Box flexDirection="row" width={W}>
+        <Text bold={att.urgent > 0} color={lead.tone} dimColor={att.total === 0}>{lead.text}</Text>
+        {detail && <Text color={lead.tone} wrap="truncate-end"> · {detail}</Text>}
+        {facts.map(f => (
+          <Text dimColor={att.total === 0} color={att.total === 0 ? undefined : f.tone}>  {f.text}</Text>
+        ))}
+        <Text dimColor>  /dash</Text>
       </Box>
     )
   })

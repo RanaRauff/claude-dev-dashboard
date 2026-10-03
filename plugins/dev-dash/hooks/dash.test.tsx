@@ -119,6 +119,12 @@ test('lists every live Claude session, with or without the plugin', { timeoutMs:
   on('command.register', async () => ({ value: undefined }))
   on('clock.every', async () => ({ value: undefined }))
   on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
+  on('ui.close', async () => ({ value: undefined }))
+  // What Claude Code draws when no plugin claims the band: nothing, here.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine band</Text>
+  })
   on('process.run', async (_$, e) => {
     const [cmd, ...args] = e.argv
     if (cmd === 'tasklist') return ok('"claude.exe","100","Console","5","1 K"\n"claude.exe","200","Console","5","1 K"\n"claude.exe","400","Console","5","1 K"\n')
@@ -168,6 +174,26 @@ test('lists every live Claude session, with or without the plugin', { timeoutMs:
   expect(await ui.find({ type: 'Text', text: /dead session/ })).toBeUndefined()
   expect(reads.some(p => p.endsWith('.key'))).toBe(false)
   await ui.unmount()
+
+  // The band above the prompt steps aside while the pane is open...
+  const BAND = {
+    plugin: 'dev-dash',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 110 },
+  } as const
+  const hidden = await $.ui.mount(BAND as never)
+  expect(await hidden.find({ type: 'Text', text: /need/ })).toBeUndefined()
+  expect(await hidden.find({ type: 'Text', text: /engine band/ })).toBeDefined()
+  await hidden.unmount()
+
+  // ...and leads with the most urgent thing once it's closed.
+  await $.command.run({ command: 'dash-hide', args: '' })
+  const band = await $.ui.mount(BAND as never)
+  for (const re of [/◆ 1 needs you/, /Fix flaky tests · input needed/, /5h 62%/, /\/dash/]) {
+    if (!(await band.find({ type: 'Text', text: re }))) throw new Error(`band: no text matching ${re}`)
+  }
+  await band.unmount()
 })
 
 test('redesigned pane adapts to narrow and wide docks', { timeoutMs: 15_000 }, async ($, on) => {
