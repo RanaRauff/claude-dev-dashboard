@@ -88,3 +88,11 @@ export const lane = (startedAt: number, endAt: number, from: number, to: number,
 
   return '·'.repeat(a) + '▬'.repeat(b - a) + '·'.repeat(n - b)
 }
+
+/** Which row (0 = top) of the drawn beat holds its newest sample: the one place the tip blinks. */
+export const tipRow = (activity: readonly number[], cells: number, rows: number): number => {
+  const height = Math.max(1, Math.floor(rows))
+  const levels = scaleLevels(activity, Math.max(1, Math.floor(cells)), height)
+
+  return height - 1 - (levels[levels.length - 1] ?? 0)
+}

@@ -85,7 +85,7 @@ test('keyboard: rows open with Enter, actions copy, snooze and dismiss, footer b
   // Every row has a marker button as its stop for Tab and the arrows; the whole-pane buttons are in the footer.
   expect(await hasKey(`pick-${waitId}`)).toBe(true)
   expect(await hasKey('pick-s:wait1')).toBe(true)
-  for (const key of ['key-refresh', 'key-alerts', 'key-help', 'key-close']) expect(await hasKey(key)).toBe(true)
+  for (const key of ['key-refresh', 'key-alerts', 'key-theme', 'key-help', 'key-close']) expect(await hasKey(key)).toBe(true)
   // No letter hotkeys any more: nothing in the pane is armed by a letter.
   for (const key of ['key-down', 'key-up', 'key-top', 'key-copy', 'key-snooze', 'key-dismiss', 'key-undo']) expect(await hasKey(key)).toBe(false)
 
@@ -149,6 +149,14 @@ test('keyboard: rows open with Enter, actions copy, snooze and dismiss, footer b
   // The footer buttons work: alerts and refresh answer, close closes the pane.
   const alertsOff = await $.command.run({ command: 'dash-alerts', args: 'off' })
   expect(alertsOff.text).toBe('Dashboard alerts off.')
+  // The theme button cycles through the themes and says which one it is on.
+  const themeNow = async () => ((await $.command.run({ command: 'dash-theme', args: 'list' })).text ?? '').replace(/^[^]*Now: /, '')
+  expect(await themeNow()).toBe('auto.')
+  await press('key-theme')
+  expect(await themeNow()).toBe('claude.')
+  expect((await $.command.run({ command: 'dash-theme', args: 'nord' })).text).toMatch(/^Theme: Nord/)
+  expect(await themeNow()).toBe('nord.')
+  expect((await $.command.run({ command: 'dash-theme', args: 'banana' })).text).toMatch(/No theme called/)
   await press('key-alerts')
   await press('key-refresh')
   await press('key-close')

@@ -15,11 +15,13 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
-import { claudeBeat, effortOf, lane } from './beat'
+import { claudeBeat, effortOf, lane, tipRow } from './beat'
 import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './keys'
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { TABS, isTab } from './entertainment'
+import { applyTheme, themeByName } from './themes'
+import type { Roles } from './themes'
 import { progressSections } from './progress-view'
 import { customView, entertainmentView } from './tabs-view'
 import { testBadge } from './testrun'
@@ -43,16 +45,25 @@ export const tabState = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashb
 // (dark or light) remaps to readable values. No hex: a fixed hex that reads on
 // black can vanish on white. Swap the right-hand side to retheme.
 // ---------------------------------------------------------------------------
-export const TONE = {
+// A live table: applyTheme (themes.ts) points it at the chosen theme at the start of each render, so every colour
+// below is read when it is drawn. `you` is the colour of "this needs you".
+export const TONE: Roles = {
+  you: 'yellow',
   ok: 'green',
   warn: 'yellow',
   bad: 'red',
   info: 'cyan',
   accent: 'magenta',
   mute: 'gray',
-} as const
+}
 
-const STATE_TONE: Record<SessionState, string> = { running: TONE.ok, waiting: TONE.warn, idle: TONE.mute, ended: TONE.mute }
+// Read through getters: the theme can change between renders.
+const STATE_TONE = {
+  get running() { return TONE.ok },
+  get waiting() { return TONE.you },
+  get idle() { return TONE.mute },
+  get ended() { return TONE.mute },
+} as Record<SessionState, string>
 const STATE_BADGE: Record<SessionState, string> = { running: ' RUN  ', waiting: ' WAIT ', idle: ' IDLE ', ended: ' END  ' }
 
 // ---------------------------------------------------------------------------
@@ -143,17 +154,22 @@ export const limitNote = (l: LimitRow, now: number) => {
 }
 
 const AGENT_LOOK: Record<AgentState, { glyph: string; tone: string; word: string }> = {
-  working: { glyph: '◐', tone: TONE.ok, word: 'working' },
-  quiet: { glyph: '◌', tone: TONE.warn, word: 'quiet' },
-  done: { glyph: '✓', tone: TONE.mute, word: 'done' },
-  stopped: { glyph: '■', tone: TONE.mute, word: 'stopped' },
+  working: { glyph: '◐', get tone() { return TONE.ok }, word: 'working' },
+  quiet: { glyph: '◌', get tone() { return TONE.warn }, word: 'quiet' },
+  done: { glyph: '✓', get tone() { return TONE.mute }, word: 'done' },
+  stopped: { glyph: '■', get tone() { return TONE.mute }, word: 'stopped' },
 }
 
 /** A spinner frame for working agents, advancing every sync. */
 const SPIN = '◐◓◑◒'
 export const spinFrame = (at: number) => SPIN[Math.floor(at / 5000) % SPIN.length]
 
-const EVENT_TONE: Record<EventRow['tone'], string> = { ok: TONE.ok, warn: TONE.warn, bad: TONE.bad, info: TONE.info }
+const EVENT_TONE = {
+  get ok() { return TONE.ok },
+  get warn() { return TONE.warn },
+  get bad() { return TONE.bad },
+  get info() { return TONE.info },
+} as Record<EventRow['tone'], string>
 const EVENT_GLYPH: Record<EventRow['tone'], string> = { ok: '✓', warn: '◆', bad: '✗', info: '·' }
 
 export const clockOf = (at: number) => {
@@ -162,10 +178,10 @@ export const clockOf = (at: number) => {
 }
 
 const CI: Record<CiState, { glyph: string; tone: string; inverse: boolean }> = {
-  failing: { glyph: ' ✗ CI ', tone: TONE.bad, inverse: true },
-  pending: { glyph: '◌ CI', tone: TONE.warn, inverse: false },
-  passing: { glyph: '✓ CI', tone: TONE.ok, inverse: false },
-  none: { glyph: '· no CI', tone: TONE.mute, inverse: false },
+  failing: { glyph: ' ✗ CI ', get tone() { return TONE.bad }, inverse: true },
+  pending: { glyph: '◌ CI', get tone() { return TONE.warn }, inverse: false },
+  passing: { glyph: '✓ CI', get tone() { return TONE.ok }, inverse: false },
+  none: { glyph: '· no CI', get tone() { return TONE.mute }, inverse: false },
 }
 
 const reviewChip = (p: PrRow): { text: string; tone: string } => {
@@ -182,6 +198,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const s = await read($, snap)
+    applyTheme(TONE, s?.theme)
     const folded = (await read($, collapsed)) ?? []
     const opened2 = (await read($, expanded)) ?? []
     const isPulse = (await read($, blink)) === true
@@ -300,12 +317,13 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const costs = s.sessions.map(r => r.costUsd).filter((c): c is number => c !== null)
     const cost = costs.length ? costs.reduce((a, b) => a + b, 0) : null
     const live = s.sessions.filter(r => r.state === 'running').length
-    const headTone = att.urgent > 0 ? TONE.warn : att.total > 0 ? TONE.info : TONE.ok
+    const headTone = att.urgent > 0 ? TONE.you : att.total > 0 ? TONE.info : TONE.ok
     const agents = s.agents ?? []
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
     // "claude beat": a line graph of how much effort Claude put in at each sync, flat along the bottom when idle.
     const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 4 : 5)
+    const tipAt = tipRow(samples, L.sparkCells, isNarrow ? 4 : 5)
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -314,10 +332,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           <Text bold>DEV-DASH</Text>
         </Box>
         <Box flexDirection="row" justifyContent="center" columnGap={1}>
-          <Text color={TONE.warn}>■ you</Text>
+          <Text color={TONE.you}>■ you</Text>
           <Text color={TONE.info}>■ sessions</Text>
           <Text color={TONE.accent}>■ agents</Text>
           <Text color={TONE.ok}>■ limits</Text>
+          <Text color={TONE.warn}>■ PRs</Text>
         </Box>
         <Box flexDirection="row" flexWrap="wrap">
           <Text bold color={headTone}>{att.total > 0 ? `◆ ${att.total} need${att.total === 1 ? 's' : ''} you` : '✓ all clear'}</Text>
@@ -339,18 +358,18 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         )}
         <Box flexDirection="row" columnGap={1}>
           <Box flexDirection="column">
-            <Text bold color="red">♥ claude beat</Text>
+            <Text bold color={TONE.bad}>♥ claude beat</Text>
             <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
           </Box>
           <Box flexDirection="column">
-            {beat.map(row => {
+            {beat.map((row, at) => {
               // The tip of the line (its newest sample) blinks, so a quiet pane still shows that it is alive.
               const tip = row.slice(-1)
-              const isTip = tip !== ' ' && row.length > 1
+              const isTip = at === tipAt && tip !== ' ' && row.length > 1
               return (
-                <Text bold color="red">
+                <Text bold color={TONE.bad}>
                   {isTip ? row.slice(0, -1) : row}
-                  {isTip ? <Text bold color={isPulse ? 'white' : 'red'}>{isPulse ? '●' : tip}</Text> : null}
+                  {isTip ? <Text bold={isPulse} dimColor={!isPulse} color={TONE.bad}>{isPulse ? '●' : '○'}</Text> : null}
                 </Text>
               )
             })}
@@ -362,7 +381,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     // ---- Focus: the one thing that needs you grows into a card; the rest wait in a short queue -------------------
     type Need = { id: string; tone: string; glyph: string; name: string; verb: string; say: string; age: string; row?: SessionRow }
     const needs: Need[] = [
-      ...att.waiting.map(r => ({ id: ids.wait(r), tone: TONE.warn, glyph: '◆', name: r.name || where(r), verb: 'waiting on you', say: r.waitingFor || 'waiting', age: ago(now - r.stateSince), row: r })),
+      ...att.waiting.map(r => ({ id: ids.wait(r), tone: TONE.you, glyph: '◆', name: r.name || where(r), verb: 'waiting on you', say: r.waitingFor || 'waiting', age: ago(now - r.stateSince), row: r })),
       ...att.stuck.map(r => ({ id: ids.stuck(r), tone: TONE.bad, glyph: '⟳', name: r.name || where(r), verb: 'may be stuck', say: String(r.stuck), age: ago(now - r.stateSince), row: r })),
       ...att.risky.map(r => ({ id: ids.risky(r), tone: TONE.bad, glyph: '⚡', name: r.name || where(r), verb: 'ran something risky', say: String(r.risky), age: ago(now - r.stateSince), row: r })),
       ...att.disks.map(d => ({ id: ids.disk(d), tone: TONE.bad, glyph: '▼', name: `disk ${d.name}`, verb: 'is low', say: `${bytes(d.freeBytes)} free of ${bytes(d.totalBytes)}`, age: '' })),
@@ -885,6 +904,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
           <Button key="key-refresh" label="refresh" onPress={() => undefined} />
           <Button key="key-alerts" label={s.alertsOn ? 'alerts: on' : 'alerts: off'} onPress={() => undefined} />
+          <Button key="key-theme" label={`theme: ${themeByName(s.theme)?.label ?? 'Auto'}`} onPress={() => undefined} />
           <Button key="key-help" label={isHelpOn ? 'hide help' : 'help'} onPress={() => update($, showHelp, v => !v)} />
           <Button key="key-close" label="close" onPress={() => undefined} />
         </Box>
@@ -945,6 +965,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, snap)
     if (!s || !s.bandOn || s.paneOpen || e.props.hasSurvey) return next(e)
+    applyTheme(TONE, s.theme)
     const { Box, Text } = $.ui.resolve(e)
     const now = Date.now()
     const W = Math.max(30, e.props.bodyColumns)
@@ -966,7 +987,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       : att.failing[0] ? `#${att.failing[0].number} ${att.failing[0].conflicts ? 'conflicts' : 'CI failing'}`
       : ''
     const lead =
-      att.urgent > 0 ? { text: `◆ ${att.urgent} need${att.urgent === 1 ? 's' : ''} you`, tone: TONE.warn }
+      att.urgent > 0 ? { text: `◆ ${att.urgent} need${att.urgent === 1 ? 's' : ''} you`, tone: TONE.you }
       : att.reviews.length > 0 ? { text: `◎ ${plural(att.reviews.length, 'review')} waiting`, tone: TONE.info }
       : { text: '✓ all clear', tone: TONE.ok }
 

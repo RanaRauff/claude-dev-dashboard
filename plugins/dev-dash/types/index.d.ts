@@ -198,6 +198,8 @@ export type Snapshot = {
   spotifyOn: boolean
   /** Whether the other cards fold to one line while something urgently needs you (the Flight Deck focus). On by default. */
   focusOn: boolean
+  /** The colour theme (/dash-theme). `auto` follows the terminal's own colours. */
+  theme: ThemeId
   git: GitInfo | null
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
@@ -206,6 +208,8 @@ export type Snapshot = {
   iconStyle?: IconStyle
   updatedAt: number
 }
+
+export type ThemeId = 'auto' | 'claude' | 'nord' | 'neon' | 'crt' | 'light' | 'mono'
 
 export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files' | 'watching'
 
