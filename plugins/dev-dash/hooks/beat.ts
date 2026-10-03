@@ -1,46 +1,39 @@
-// dev-dash: "claude beat", the header's activity trace drawn as an ECG: a flat baseline with a heartbeat on it
-// wherever sessions were active. Pure functions only, so they test without a session.
+// dev-dash: "claude beat", the header's activity trace: a line graph of how much effort Claude was putting in, one
+// column per sync, newest at the right. Pure functions only, so they test without a session.
 //
-// Each sync (one activity sample) is worth BEAT_DOTS columns of line. A quiet sync is the baseline; a busy one is one
-// heartbeat: a small bump (P), a sharp spike up (R) with a dip below the baseline (S), and a rounded bump (T), as
-// tall as the sync was busy compared with the busiest in view. The line is drawn with solid line characters, one
-// column per sample, so it is a connected line and not a scatter of dots: `─` along the baseline, `│` for the steep
-// sides, and `╭ ╮ ╰ ╯` where it turns.
+// "Effort" is a score made at each sync from what was going on (see effortOf): running sessions count most, then
+// busy agents, then waiting sessions, plus how many tool calls this session made since the last sync. The line is
+// drawn with solid line characters, so it is one connected stroke and not a scatter of dots: `─` along a level
+// stretch, `│` for the steep sides, and `╭ ╮ ╰ ╯` where it turns. Nothing running is a flat line along the bottom.
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
 
-/** Columns of line one sync takes up: enough for the whole heartbeat, short enough to show five or so. */
-export const BEAT_DOTS = 6
+/**
+ * How much effort one sync saw. A running session is 3, a busy agent 2, a session waiting on someone 1, and each
+ * tool call this session made since the last sync 0.6 (at most 12 of them, so a burst cannot flatten everything else).
+ */
+export function effortOf(running: number, waiting: number, workingAgents: number, toolCalls: number): number {
+  const n = (v: number) => (Number.isFinite(v) ? Math.max(0, v) : 0)
 
-/** One heartbeat across BEAT_DOTS columns, as a fraction of the room above (+) or below (-) the baseline. */
-const HEARTBEAT: readonly number[] = [0.3, 0, 1, -0.8, 0, 0.4]
+  return n(running) * 3 + n(waiting) * 1 + n(workingAgents) * 2 + Math.min(n(toolCalls), 12) * 0.6
+}
 
-/** The baseline level (0 = bottom) for `levels` rows: low enough to leave most of the room above it for spikes, with a row below for the dip. */
-export const baselineOf = (levels: number) => (levels <= 2 ? 0 : Math.max(1, Math.floor((levels - 1) / 2.2)))
+/** The smallest top of the scale, so a little effort looks like a little and not like the most there has ever been. */
+export const MIN_SCALE = 6
 
 /**
- * The line as one level per column, `dots` of them, newest at the right. Fewer syncs than fit are placed at the
- * right end with a flat baseline to their left. Heights are scaled to the busiest sync in view, at least 1, and a
- * beat is never drawn smaller than a third of full height so a single busy session still shows.
+ * The last `cells` efforts as a level per column (0 = bottom row, `rows - 1` = top), newest at the right. Fewer
+ * syncs than fit are placed at the right with zero effort to their left. The top of the scale is the busiest sync in
+ * view, but never less than MIN_SCALE.
  */
-export function ecgLevels(activity: readonly number[], dots: number, levels: number): number[] {
-  const base = baselineOf(levels)
-  const up = levels - 1 - base
-  const down = base
-  const syncs = activity.slice(-Math.ceil(dots / BEAT_DOTS)).map(v => (Number.isFinite(v) ? Math.max(0, v) : 0))
-  const max = Math.max(1, ...syncs)
-  const line: number[] = []
-  for (const a of syncs) {
-    if (a <= 0) {
-      for (let i = 0; i < BEAT_DOTS; i++) line.push(base)
-      continue
-    }
-    const size = clamp(a / max, 1 / 3, 1)
-    for (const f of HEARTBEAT) line.push(clamp(base + Math.round(f * size * (f >= 0 ? up : down)), 0, levels - 1))
-  }
-  const tail = line.slice(-dots)
+export function scaleLevels(activity: readonly number[], cells: number, rows: number): number[] {
+  const width = Math.max(1, Math.floor(cells))
+  const top = Math.max(1, Math.floor(rows)) - 1
+  const window = activity.slice(-width).map(v => (Number.isFinite(v) ? Math.max(0, v) : 0))
+  const values = [...Array<number>(width - window.length).fill(0), ...window]
+  const max = Math.max(MIN_SCALE, ...values)
 
-  return [...Array<number>(dots - tail.length).fill(base), ...tail]
+  return values.map(v => clamp(Math.round((v / max) * top), 0, top))
 }
 
 /**
@@ -74,10 +67,10 @@ export function drawLine(columns: readonly number[], rows: number): string[] {
   return grid.map(row => row.join(''))
 }
 
-/** The header's "claude beat": the last activity as an ECG, `cells` columns wide and `rows` rows tall. */
-export function claudeBeat(activity: readonly number[], cells: number, rows = 4): string[] {
+/** The header's "claude beat": the effort history as a connected line graph, `cells` columns wide and `rows` rows tall. */
+export function claudeBeat(activity: readonly number[], cells: number, rows = 5): string[] {
   const width = Math.max(1, Math.floor(cells))
   const height = Math.max(1, Math.floor(rows))
 
-  return drawLine(ecgLevels(activity, width, height), height)
+  return drawLine(scaleLevels(activity, width, height), height)
 }

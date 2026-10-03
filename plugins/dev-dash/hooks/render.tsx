@@ -15,7 +15,7 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { bytes, collisionsOf, isDiskLow } from './monitor'
-import { claudeBeat } from './beat'
+import { claudeBeat, effortOf } from './beat'
 import { progressSections } from './progress-view'
 import { watchingSection } from './watch-view'
 
@@ -77,9 +77,26 @@ export const sparkline = (values: readonly number[], width: number) => {
   return v.map(x => SPARK[clamp(Math.round((x / max) * 7), 0, 7)]).join('')
 }
 
-/** One activity sample per tick: sessions that are running or waiting. Keeps the last `keep`. */
-export const pushActivity = (history: readonly number[] | undefined, sessions: readonly SessionRow[], keep = 48) =>
-  [...(history ?? []), sessions.filter(r => r.state === 'running' || r.state === 'waiting').length].slice(-keep)
+/**
+ * One effort sample per tick (see effortOf): running sessions, sessions waiting, agents at work, and the tool
+ * calls this session made since the last sample. Keeps the last `keep`.
+ */
+export const pushActivity = (
+  history: readonly number[] | undefined,
+  sessions: readonly SessionRow[],
+  agents: readonly AgentRow[] = [],
+  toolCalls = 0,
+  keep = 48,
+) =>
+  [
+    ...(history ?? []),
+    effortOf(
+      sessions.filter(r => r.state === 'running').length,
+      sessions.filter(r => r.state === 'waiting').length,
+      agents.filter(a => a.state === 'working').length,
+      toolCalls,
+    ),
+  ].slice(-keep)
 
 export const ctxTone = (pct: number) => (pct >= 80 ? TONE.bad : pct >= 60 ? TONE.warn : TONE.ok)
 
@@ -222,8 +239,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const agents = s.agents ?? []
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
-    // "claude beat": the activity as an ECG, a heartbeat on a flat baseline wherever sessions were busy.
-    const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 3 : 4)
+    // "claude beat": a line graph of how much effort Claude put in at each sync, flat along the bottom when idle.
+    const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 4 : 5)
 
     // ---- header card ------------------------------------------------------
     const header = (
