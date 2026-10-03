@@ -114,7 +114,7 @@ claude plugin test ./plugins/dev-dash
 
 Once the plugin has loaded, Claude Code writes its type declarations to `plugins/dev-dash/.claude-plugin/types/` (git-ignored), and `tsc -p plugins/dev-dash` type-checks it.
 
-Ideas and research: [docs/dashboard-ideas.md](docs/dashboard-ideas.md), [docs/x-thread-mods.md](docs/x-thread-mods.md) and [what people are building with mods](docs/mods-research.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
+Ideas and research: [docs/dashboard-ideas.md](docs/dashboard-ideas.md), [docs/x-thread-mods.md](docs/x-thread-mods.md) and [what people are building with mods](docs/mods-research.md). See [TODO.md](TODO.md) for what is planned and who has what, and [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
 
 ## License
 
