@@ -1,44 +1,53 @@
 # claude-dev-dashboard
 
-A developer dashboard for [Claude Code](https://claude.com/claude-code). It opens a pane inside your session that answers "what needs me right now?" across your Claude sessions, your git work, and your pull requests.
+A developer dashboard for [Claude Code](https://claude.com/claude-code). It opens a pane inside your session that answers "what needs me right now?" across every Claude session and subagent on your machine, your usage limits, your git work, and your pull requests.
 
 ```
-▍Attention (3)
-  ⏸ api@feat/login waiting 2m
-  ✗ #42 CI failing · Add login
-  ◎ review #7 @teammate 4d · Fix cache
-
-▍Sessions (2)
-  ⏸ api@feat/login · waiting 2m
-    up 1h00 · $1.25 · ctx 85% ⚠ near compaction · Bash
-  ● web@main (this) · running 5s
-    up 10m · $0.40 · ctx 20% · Edit
-
-▍Work in flight
-  main ↑2 ↓1 · 3 uncommitted · 1 stashed
-    old-fix · 3 weeks · merged into main
-
-▍PRs & CI
-  mine (1)
-    #42 failing · approved · 2d · Add login
-  to review (1)
-    #7 @teammate · 4d · Fix cache
+╭──────────────────────────────────────────────╮
+│ ◆ 2 need you · 4 sess · 1 live · 2 agents    │
+│ 5h ▰▰▰▰▰▱▱▱ 62%  7d ▰▰▱▱▱▱▱▱ 23%            │
+│ ▁▂▃▅▆▇▆▅ activity · synced 2s ago            │
+╰──────────────────────────────────────────────╯
+▾ Attention (2) ──────────────────────────────
+  ◆ Fix flaky tests · input needed 3m
+  ⟳ Login work may be stuck · npm test failed 3× in a row
+▾ Sessions (4) ───────────────────────────────
+  [WAIT] Fix flaky tests · input needed 3m
+         ▰▰▰▰▰▰▰▱ ctx 85% · $1.25 · Bash: npm test   compact soon
+▾ Agents (2) ─────────────────────────────────
+  ◐ Research dashboard ideas · working 4m
+    general-purpose · Claude mods · 23 steps
+    ↳ WebSearch: claude code dashboards
+▾ Monitor ────────────────────────────────────
+  5h  ▰▰▰▰▰▱▱▱  62% out in ~40m at this pace · resets in 1h20
+  events  🔔 alerts on
+    14:02 ◆ Fix flaky tests needs input
+    13:58 ✓ agent finished: Research dashboard ideas
+▸ Work in flight  main · 3 dirty · +120 −30
+▸ PRs & CI  1 mine · 0 to review
 ```
 
 ## What it shows
 
-| Section | Contents |
-| --- | --- |
-| **Attention** | Sessions waiting on a permission prompt or a question, your PRs with failing CI or merge conflicts, and PRs waiting for your review (oldest first). |
-| **Sessions** | Every Claude Code session on this machine running the plugin: repo and branch, state (running, idle, waiting) and for how long, uptime, cost, context use (warning from 80%), and the last tool used. |
-| **Work in flight** | Current branch, ahead/behind its upstream, uncommitted and stashed changes, recent branches with merged ones highlighted, and worktrees with the session using each. |
-| **PRs & CI** | Your open PRs with CI state, review decision, age and conflicts, and the PRs requesting your review. |
+| Section | Key | Contents |
+| --- | --- | --- |
+| **Header** | | Overall status (green all clear, yellow needs you), session and agent counts, total cost, usage-limit bars, and an activity sparkline. |
+| **Attention** | 1 | Sessions waiting on you (and what for), sessions that look stuck, two sessions editing the same file, a usage limit about to run out, your PRs with failing CI or conflicts, and PRs awaiting your review. |
+| **Sessions** | 2 | Every running Claude Code session on this machine, CLI or desktop, plugin or not: its title, repo and branch, state and for how long, and uptime. Sessions that also load the plugin add context use, cost and their latest step. |
+| **Agents** | 3 | Every subagent of every running session: description, type, owning session, steps taken, and what it's doing now. Finished and stopped agents stay for 30 minutes. |
+| **Monitor** | 4 | Usage limits (5-hour, 7-day) with a forecast of when you'll run out at the current pace, context bars per session, and a live event feed. |
+| **Work in flight** | 5 | Current branch, ahead/behind, uncommitted lines (+/−), stashes, recent and merged branches, and worktrees. |
+| **PRs & CI** | 6 | Your open PRs across all your GitHub repos, with CI, review state, age and conflicts, plus the PRs waiting for your review. |
+
+Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **h** hides the pane.
+
+## Alerts
+
+dev-dash shows a short toast when something needs you: a session starts waiting, an agent finishes, CI goes red or back to green, a session looks stuck, or this session's context crosses 75%. Everything else only goes to the event feed. Turn toasts off with `/dash-alerts off` (or **a** in the pane); the choice is remembered.
 
 ## Install
 
-The plugin is built on Claude Code's function-hooks plugin API, which is in **early access** and may change between releases.
-
-In Claude Code:
+The plugin is built on Claude Code's mods (function hooks) API, which is in **early access** and may change between releases.
 
 ```
 /plugin marketplace add RanaRauff/claude-dev-dashboard
@@ -47,22 +56,34 @@ In Claude Code:
 
 Then, in any session:
 
-- `/dash` opens the dashboard
-- `/dash-hide` (or the **Hide dashboard** button) closes it
-
-The dashboard never opens by itself.
+- `/dash` opens the dashboard; it never opens by itself
+- `/dash-hide` closes it
+- `/dash-alerts on|off` turns toasts on or off
 
 ### Requirements
 
 - `git` on your `PATH`.
-- For the **PRs & CI** section, the [GitHub CLI](https://cli.github.com/) on your `PATH`, logged in with `gh auth login`. Without it, that section shows an install hint and everything else still works.
+- For **PRs & CI**, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works.
+- Usage limits appear on Pro and Max plans, after the session's first reply.
 
-## How it works
+## What dev-dash reads and writes
 
-- Each session running the plugin writes a small status file to `~/.claude/dev-dash/sessions/<session-id>.json` every 5 seconds and whenever its state changes. The pane reads all of them, so **only sessions that have the plugin installed appear**. A session that stops reporting drops off after 90 seconds.
-- Git data is read from the session's working directory every 5 seconds.
-- PRs are fetched with `gh pr list` once a minute, and only while the pane is open.
-- Nothing leaves your machine except the `gh` calls to GitHub.
+Mods run with Claude Code's access to your machine, so here is everything this one touches.
+
+**Reads**
+- `~/.claude/sessions/*.json`: Claude Code's list of running sessions. The `.key` files beside them are never read.
+- `~/.claude/projects/<project>/<session>.jsonl`, only for sessions that have no title, keeping just the AI-generated title or last-prompt lines.
+- `~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl` and `.meta.json`: each subagent's description, type, step count and latest step.
+- `~/.claude/dev-dash/sessions/*.json`: status files written by other sessions running dev-dash.
+- `git` in your working directories, `tasklist` (Windows) or `ps` to see which sessions are still alive, and `gh api graphql` for your PRs.
+
+**Writes**
+- `~/.claude/dev-dash/sessions/<session-id>.json`, every 5 seconds: this session's state, cost, context use, latest step, a stuck flag, and the files it edited in the last 30 minutes.
+- Its own plugin store (only the alerts on/off choice).
+
+**Network:** only the `gh` call to GitHub. Nothing else leaves your machine.
+
+`CLAUDE_CONFIG_DIR` is honoured if you have moved Claude's config directory. The session registry and transcript formats are internal to Claude Code and may change between releases.
 
 ## Development
 
@@ -70,27 +91,24 @@ The dashboard never opens by itself.
 plugins/dev-dash/
 ├── .claude-plugin/plugin.json   manifest
 ├── hooks/hooks.json             points at the hooks module
-├── hooks/register.tsx           the plugin
-├── hooks/dash.test.tsx          tests
+├── hooks/register.tsx           data collection, hooks and commands
+├── hooks/render.tsx             the pane's drawing
+├── hooks/monitor.ts             pure monitoring logic (agents, limits, events, stuck, collisions)
+├── hooks/*.test.ts(x)           tests
 └── types/index.d.ts             state contract
 ```
 
-Load your working copy into a session:
+Load your working copy into a session, then check and test it:
 
 ```
 claude --plugin-dir ./plugins/dev-dash
-```
-
-Check and test it:
-
-```
 claude plugin validate ./plugins/dev-dash
 claude plugin test ./plugins/dev-dash
 ```
 
 Once the plugin has loaded, Claude Code writes its type declarations to `plugins/dev-dash/.claude-plugin/types/` (git-ignored), and `tsc -p plugins/dev-dash` type-checks it.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
+Ideas and research: [docs/dashboard-ideas.md](docs/dashboard-ideas.md) and [docs/x-thread-mods.md](docs/x-thread-mods.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
 
 ## License
 

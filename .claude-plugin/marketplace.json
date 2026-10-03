@@ -1,15 +1,27 @@
 {
   "name": "claude-dev-dashboard",
-  "owner": { "name": "Rahul Chauhan", "url": "https://github.com/RanaRauff" },
-  "metadata": { "description": "Developer productivity plugins for Claude Code" },
+  "owner": {
+    "name": "Rahul Chauhan",
+    "url": "https://github.com/RanaRauff"
+  },
+  "metadata": {
+    "description": "Developer productivity plugins for Claude Code"
+  },
   "plugins": [
     {
       "name": "dev-dash",
       "source": "./plugins/dev-dash",
-      "description": "Developer dashboard pane: attention, sessions, work in flight, PRs and CI",
-      "version": "0.1.0",
+      "description": "Developer dashboard pane: what needs you, every Claude session and subagent, usage limits, git and PRs",
+      "version": "0.2.0",
       "license": "MIT",
-      "keywords": ["dashboard", "git", "pull-requests", "ci", "sessions", "productivity"]
+      "keywords": [
+        "dashboard",
+        "git",
+        "pull-requests",
+        "ci",
+        "sessions",
+        "productivity"
+      ]
     }
   ]
 }
