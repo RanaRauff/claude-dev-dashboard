@@ -44,6 +44,26 @@ describe('sources', () => {
     expect(sourceOf('WebFetch', {}, NOW)).toBeNull()
   })
 
+  test('what is recorded never holds credentials, query strings or fragments', () => {
+    const label = (url: string) => sourceOf('WebFetch', { url }, 0)?.label ?? ''
+    expect(label('https://a.com/x?token=abc#f')).toBe('https://a.com/x')
+    expect(label('https://user:pass@host.dev/p?api_key=secret')).toBe('https://host.dev/p')
+    expect(label('HTTP://Example.com:8080/a/b/?sig=zzz')).toBe('http://Example.com:8080/a/b/')
+    expect(label('https://a.com?token=abc')).toBe('https://a.com')
+    expect(label('not a url?token=abc#x')).toBe('not a url')
+    for (const url of ['https://a.com/x?token=abc#f', 'https://user:pass@host.dev/p?api_key=secret']) {
+      expect(label(url)).not.toMatch(/token|api_key|secret|pass|abc/)
+    }
+  })
+
+  test('a long search query is cut to 80 characters', () => {
+    const q = 'x'.repeat(200)
+    const label = sourceOf('WebSearch', { query: q }, 0)?.label ?? ''
+    expect(label.length).toBe(80)
+    expect(label.endsWith('…')).toBe(true)
+    expect(sourceOf('WebSearch', { query: 'short one' }, 0)?.label).toBe('short one')
+  })
+
   test('newest first, a repeat moves to the front, capped', () => {
     const a = { at: 1, kind: 'fetch' as const, label: 'https://a.dev' }
     const b = { at: 2, kind: 'search' as const, label: 'b' }

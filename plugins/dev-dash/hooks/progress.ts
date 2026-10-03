@@ -20,10 +20,27 @@ export function planOf(input: Record<string, unknown>): PlanProgress | null {
   return { done, total: items.length, current }
 }
 
+export const QUERY_MAX = 80
+
+/**
+ * What is safe to keep of a fetched URL: scheme, host and path. Userinfo (`user:pass@`),
+ * query and fragment can hold tokens or keys, and the label is written to disk, so they never get in.
+ */
+export function stripUrl(url: string): string {
+  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)/i.exec(url)
+  if (!m) return url.split(/[?#]/)[0].replace(/\/\/[^/@\s]*@/, '//')
+  const host = m[2].slice(m[2].lastIndexOf('@') + 1)
+
+  return `${m[1].toLowerCase()}://${host}${m[3]}`
+}
+
 /** A URL a session fetched or a query it searched, from one tool call; null for any other tool. */
 export function sourceOf(tool: string, input: Record<string, unknown>, at: number): SourceRow | null {
-  if (tool === 'WebFetch' && text(input.url)) return { at, kind: 'fetch', label: text(input.url) }
-  if (tool === 'WebSearch' && text(input.query)) return { at, kind: 'search', label: text(input.query) }
+  if (tool === 'WebFetch' && text(input.url)) return { at, kind: 'fetch', label: stripUrl(text(input.url)) }
+  if (tool === 'WebSearch' && text(input.query)) {
+    const q = text(input.query)
+    return { at, kind: 'search', label: q.length > QUERY_MAX ? `${q.slice(0, QUERY_MAX - 1)}…` : q }
+  }
 
   return null
 }

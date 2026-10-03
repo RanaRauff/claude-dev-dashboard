@@ -4,19 +4,19 @@ import type { Engine, Register } from 'claude-code'
 import type {
   AgentRow,
   BranchRow,
-  ChangedFile,
-  PlanProgress,
-  SourceRow,
   DiskRow,
   CiState,
+  ChangedFile,
   EventRow,
   GitInfo,
   LimitRow,
+  PlanProgress,
   PrInfo,
   PrRow,
   SessionRow,
   SessionState,
   Snapshot,
+  SourceRow,
   WorktreeRow,
 } from '../types'
 import {
@@ -645,7 +645,9 @@ async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
 async function tick($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
-  if (ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
+  // Only while a turn runs: turn.complete already took the final numbers, and an idle session
+  // should not keep spawning git for files it edited minutes ago.
+  if (me.state === 'running' && ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
   if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
