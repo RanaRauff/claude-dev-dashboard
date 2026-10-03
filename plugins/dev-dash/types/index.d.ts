@@ -7,7 +7,13 @@ export type PlanProgress = { done: number; total: number; current: string }
 export type SourceRow = { at: number; kind: 'fetch' | 'search'; label: string }
 
 /** A file edited this turn, with lines added and removed versus HEAD. */
-export type ChangedFile = { path: string; added: number; removed: number }
+export type ChangedFile = {
+  path: string
+  added: number
+  removed: number
+  /** False when git could not count its lines (so added and removed are not real): shown without +/-. */
+  counted?: boolean
+}
 
 /** The last test run a session started: a runner label (never the command line), whether it passed, and when. */
 export type TestRun = { ok: boolean; at: number; runner: string }

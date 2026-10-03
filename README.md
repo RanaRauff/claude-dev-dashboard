@@ -79,7 +79,7 @@ Then, in any session:
 
 ### Requirements
 
-- `git` on your `PATH`.
+- `git` on your `PATH`. If `git` or `gh` is installed but this session can't find it (an app started before it was installed keeps its old `PATH` until it is restarted), dev-dash tries the standard Windows install folders (`%ProgramFiles%\Git\cmd\git.exe`, `%ProgramFiles%\GitHub CLI\gh.exe`) before giving up. Without `git` the Files section still lists what was edited, just without line counts.
 - For **PRs & CI** and `/dash-watch`, the [GitHub CLI](https://cli.github.com/) logged in with `gh auth login`. Without it, that section shows a hint and the rest still works. If `gh` is installed but this session can't find it (an app started before it was installed keeps its old `PATH` until it is restarted), dev-dash tries the standard Windows install folder (`%ProgramFiles%\GitHub CLI\gh.exe`) before giving up.
 - Usage limits appear on Pro and Max plans, after the session's first reply.
 
