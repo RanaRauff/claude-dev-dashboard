@@ -231,6 +231,10 @@ test('redesigned pane adapts to narrow and wide docks', { timeoutMs: 15_000 }, a
   for (const re of [/0 sess$/, /3 uncommitted/, /✗ CI/, /review #7 @teammate/]) {
     if (!(await narrow.find({ type: 'Text', text: re }))) throw new Error(`narrow: no text matching ${re}`)
   }
+  // The header's activity trace is "claude beat": a connected line of solid line characters, not bars or dots.
+  if (!(await narrow.find({ type: 'Text', text: /claude beat/ }))) throw new Error('narrow: no claude beat label')
+  if (!(await narrow.find({ type: 'Text', text: /─{4,}/ }))) throw new Error('narrow: no claude beat line')
+  expect(await narrow.find({ type: 'Text', text: /[▁-█]{3,}/ })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: /0 sessions/ })).toBeUndefined()
   expect(await narrow.find({ key: 'hide' })).toBeDefined()
   await narrow.unmount()
