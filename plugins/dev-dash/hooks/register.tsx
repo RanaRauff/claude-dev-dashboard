@@ -17,6 +17,7 @@ import type {
   SessionState,
   Snapshot,
   SourceRow,
+  WatchRow,
   WorktreeRow,
 } from '../types'
 import {
@@ -47,6 +48,7 @@ import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { pushActivity, registerDashPane } from './render'
+import { addWatch, clearWatches, isExpired, parseWatchArgs, pollable, readPr, stepWatch, WATCH_EVERY_MS, WATCH_HELP } from './watch'
 
 const PANE = 'dev-dash'
 const TICK_MS = 5000
@@ -150,6 +152,8 @@ const ctx = {
   sources: [] as SourceRow[],
   turnEdits: new Map<string, string>(),
   turnFiles: [] as ChangedFile[],
+  watches: [] as WatchRow[],
+  watchPolledAt: 0,
 }
 
 const RISKY_WINDOW_MS = 10 * 60_000
@@ -644,6 +648,7 @@ async function publish($: Engine, gitInfo: GitInfo | null | undefined, sample = 
       disks: ctx.disks,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
+      watches: ctx.watches,
       updatedAt: Date.now(),
     }
     return next
@@ -692,6 +697,48 @@ async function pruneHandoffs($: Engine) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// /dash-watch: pull requests the person asked to keep an eye on
+// ---------------------------------------------------------------------------
+const isWatchRow = (v: unknown): v is WatchRow =>
+  !!v && typeof v === 'object' && typeof (v as WatchRow).id === 'string' && typeof (v as WatchRow).number === 'number' && typeof (v as WatchRow).repo === 'string'
+
+// The list lives in the plugin store, so every session sees the same one; each cycle starts from it.
+async function loadWatches($: Engine): Promise<WatchRow[]> {
+  const v = await $.store.get('watches').catch(() => undefined)
+
+  return Array.isArray(v) ? v.filter(isWatchRow) : []
+}
+
+async function readWatch($: Engine, w: WatchRow) {
+  try {
+    const r = await $.process.run(['gh', 'pr', 'view', String(w.number), '--repo', w.repo, '--json', 'state,title,reviewDecision,statusCheckRollup'], { timeoutMs: 20_000 })
+    return r.exitCode === 0 ? readPr(JSON.parse(r.stdout)) : null
+  } catch {
+    return null
+  }
+}
+
+// One look at every live watch: no faster than WATCH_EVERY_MS unless forced (adding a watch takes its baseline).
+// A change after the baseline fires the watch: a line in the event feed and a mark in the section. Never a toast.
+async function pollWatches($: Engine, force: boolean) {
+  const now = Date.now()
+  if (!force && now - ctx.watchPolledAt < WATCH_EVERY_MS) return
+  ctx.watchPolledAt = now
+  let list = (await loadWatches($)).filter(w => !isExpired(w, now))
+  for (const w of pollable(list, now)) {
+    const r = await readWatch($, w)
+    if (!r) continue
+    const next = stepWatch(w, r, now)
+    if (next.firedAt > w.firedAt) {
+      note($, { at: now, tone: /failing/.test(next.fired) ? 'bad' : next.fired === 'merged' ? 'ok' : 'info', text: `watch #${w.number} ${w.repo}: ${next.fired}` }, false)
+    }
+    list = list.map(x => (x.id === w.id ? next : x))
+  }
+  ctx.watches = list
+  await $.store.set('watches', list).catch(() => undefined)
+}
+
 async function tick($: Engine, withPrs: boolean) {
   const g = await readGit($)
   if (g) me.branch = g.branch
@@ -700,6 +747,8 @@ async function tick($: Engine, withPrs: boolean) {
   if (me.state === 'running' && ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
+  // The list is read from the store inside, so a watch another session added is picked up too.
+  if (ctx.isOpen) await pollWatches($, false)
   if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
   await publish($, g, true)
 }
@@ -736,6 +785,8 @@ export const register: Register = on => {
     await $.command.register({ name: 'dash-handoff', description: 'Write a handoff note when a session compacts (on | off, or toggle)' })
     const storedHandoff = await $.store.get('handoffOn').catch(() => undefined)
     if (typeof storedHandoff === 'boolean') ctx.handoffOn = storedHandoff
+    await $.command.register({ name: 'dash-watch', description: 'Keep an eye on a pull request: pr <number or URL> | list | clear <number|all>' })
+    ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, Date.now()))
     await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
@@ -886,6 +937,46 @@ export const register: Register = on => {
     await publish($, undefined)
 
     return { text: `Dashboard alerts ${ctx.alertsOn ? 'on' : 'off'}.` }
+  })
+
+  on('command.run', { command: 'dash-watch' }, async ($, e) => {
+    const cmd = parseWatchArgs(e.args ?? '')
+    const now = Date.now()
+    ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, now))
+    if (cmd.cmd === 'help') return { text: `${cmd.reason} ${WATCH_HELP}` }
+    if (cmd.cmd === 'list') {
+      const rows = ctx.watches.map((w, i) => `${i + 1}. #${w.number} ${w.repo} · ${w.detail || 'waiting for the first look'}${w.firedAt ? ` · ${w.fired}` : ''}`)
+
+      return { text: rows.length ? rows.join('\n') : `Nothing watched. ${WATCH_HELP}` }
+    }
+    if (cmd.cmd === 'clear') {
+      const r = clearWatches(ctx.watches, cmd.which)
+      ctx.watches = r.list
+      await $.store.set('watches', r.list).catch(() => undefined)
+      await publish($, undefined)
+
+      return { text: r.removed ? `Cleared ${r.removed === 1 ? 'that watch' : `${r.removed} watches`}.` : 'No watch with that number. /dash-watch list shows them.' }
+    }
+    // Add. A bare number means this session's repository, as gh knows it.
+    let ref = cmd.ref
+    if (!ref.repo) {
+      let name = ''
+      try {
+        const r = await $.process.run(['gh', 'repo', 'view', '--json', 'nameWithOwner'], { timeoutMs: 15_000 })
+        if (r.exitCode === 0) name = String((JSON.parse(r.stdout) as { nameWithOwner?: string }).nameWithOwner ?? '')
+      } catch {}
+      if (!name) return { text: 'I could not tell which repository #' + ref.number + ' is in. Use owner/repo#' + ref.number + ' or the pull request URL.' }
+      ref = { ...ref, repo: name }
+    }
+    const added = addWatch(ctx.watches, ref, now)
+    if (added.error || !added.added) return { text: added.error }
+    ctx.watches = added.list
+    await $.store.set('watches', added.list).catch(() => undefined)
+    await pollWatches($, true)
+    await publish($, undefined)
+    const w = ctx.watches.find(x => x.id === added.added?.id)
+
+    return { text: `Watching ${ref.repo}#${ref.number}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.` }
   })
 
   on('command.run', { command: 'dash-handoff' }, async ($, e) => {

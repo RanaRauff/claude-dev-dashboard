@@ -113,6 +113,32 @@ export type PrRow = {
 
 export type PrInfo = { error: string | null; mine: PrRow[]; toReview: PrRow[]; fetchedAt: number }
 
+/** A pull request the person asked to keep an eye on with /dash-watch. */
+export type WatchRow = {
+  /** `pr:<owner/repo>#<number>`, lower case. */
+  id: string
+  kind: 'pr'
+  /** `owner/repo`. */
+  repo: string
+  number: number
+  title: string
+  addedAt: number
+  /** When it stops being polled and drops off the list: 24 hours after it was added, or after it last fired. */
+  expiresAt: number
+  /** The comparable state from the last look (`OPEN|passing|approved`); '' until the first look. */
+  value: string
+  /** The same, in words. */
+  detail: string
+  checkedAt: number
+  changedAt: number
+  /** When it last changed after the baseline look; 0 if it has not. */
+  firedAt: number
+  /** What changed, in words (`CI failing`, `merged`). */
+  fired: string
+  /** True once the PR is merged or closed: nothing left to poll. */
+  done: boolean
+}
+
 export type Snapshot = {
   selfId: string
   sessions: SessionRow[]
@@ -129,10 +155,12 @@ export type Snapshot = {
   disks: DiskRow[]
   git: GitInfo | null
   prs: PrInfo | null
+  /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
+  watches?: WatchRow[]
   updatedAt: number
 }
 
-export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files'
+export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files' | 'watching'
 
 declare module 'claude-code' {
   interface PluginState {
