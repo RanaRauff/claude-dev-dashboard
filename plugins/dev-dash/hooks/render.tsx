@@ -640,10 +640,16 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           hotkey="h"
           label="hide"
           dimColor
-          onPress={async () => {
-            hooks.onHide?.()
-            await $.ui.close({ id: PANE })
-          }}
+          onPress={() => $.command.run({ command: 'dash-hide', args: '' })}
+        />
+        <Text dimColor>  </Text>
+        <Button
+          key="refresh"
+          plain
+          hotkey="r"
+          label="refresh"
+          dimColor
+          onPress={() => $.command.run({ command: 'dash-refresh', args: '' })}
         />
         <Text dimColor wrap="truncate-end">
           {e.props.isFocused ? '  1-6 fold · a alerts · ↑↓ scroll · esc back' : isNarrow ? '  ctrl+x tab: keys' : '  ctrl+x tab for keys · 1-6 fold · a alerts'}

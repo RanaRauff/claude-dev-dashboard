@@ -40,7 +40,7 @@ A developer dashboard for [Claude Code](https://claude.com/claude-code). It open
 | **Work in flight** | 5 | Current branch, ahead/behind, uncommitted lines (+/−), stashes, recent and merged branches, and worktrees. |
 | **PRs & CI** | 6 | Your open PRs across all your GitHub repos, with CI, review state, age and conflicts, plus the PRs waiting for your review. |
 
-Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **h** hides the pane.
+Keys work while the pane has focus (**ctrl+x tab**): **1–6** fold a section, **a** toggles alerts, **r** refreshes, **h** hides the pane.
 
 ## Alerts
 
@@ -63,6 +63,7 @@ Then, in any session:
 - `/dash-hide` closes it
 - `/dash-alerts on|off` turns toasts and the chime on or off
 - `/dash-band on|off` shows or hides the line above the prompt
+- `/dash-refresh` (or **r** in the pane) refreshes everything now, PRs included
 
 ### Requirements
 

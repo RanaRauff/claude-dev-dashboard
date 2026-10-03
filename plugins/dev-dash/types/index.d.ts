@@ -119,6 +119,8 @@ declare module 'claude-code' {
       snap: Snapshot | null
       collapsed: DashSection[]
       activity: number[]
+      /** Whether the pane is open; kept by the host so a reload of the mod doesn't forget it. */
+      paneOpen: boolean
     }
   }
 }

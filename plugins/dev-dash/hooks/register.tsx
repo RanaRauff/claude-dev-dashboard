@@ -1,4 +1,4 @@
-import { atom, update } from 'claude-code'
+import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
 import type {
@@ -47,6 +47,7 @@ const STALE_MS = 90_000
 // Same refs as ./render.tsx; defined here because the validator reads each module's atoms from its own source.
 const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
+const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
@@ -634,8 +635,11 @@ export const register: Register = on => {
     if (typeof stored === 'boolean') ctx.alertsOn = stored
     const storedBand = await $.store.get('bandOn').catch(() => undefined)
     if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
-    await tick($, false)
+    // A reload of the mod starts this module over; the host's state remembers the pane was open.
+    ctx.isOpen = (await read($, paneOpen)) === true
+    await tick($, ctx.isOpen)
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1
       await tick($, ctx.isOpen && (ctx.prs === null || ctx.ticks % PR_EVERY_TICKS === 0))
@@ -710,6 +714,24 @@ export const register: Register = on => {
     }
   })
 
+  on('command.run', { command: 'dash-refresh' }, async $ => {
+    titleCache.clear()
+    gitCache.clear()
+    await tick($, true)
+
+    return { text: `Dashboard refreshed${ctx.prs?.error ? `; PRs: ${ctx.prs.error}` : ''}.` }
+  })
+
+  // Closed some other way (the pane's own close, or Claude Code itself): stop polling GitHub.
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) {
+      ctx.isOpen = false
+      await update($, paneOpen, () => false)
+    }
+
+    return next(e)
+  })
+
   on('command.run', { command: 'dash-band' }, async ($, e) => {
     const arg = (e.args ?? '').trim().toLowerCase()
     ctx.bandOn = arg === 'on' ? true : arg === 'off' ? false : !ctx.bandOn
@@ -730,6 +752,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'dash' }, async $ => {
     ctx.isOpen = true
+    await update($, paneOpen, () => true)
     await $.ui.open({ id: PANE, title: 'Dev dashboard' })
     if (ctx.disks.length === 0) void readDisks($)
     void tick($, true)
@@ -739,6 +762,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'dash-hide' }, async $ => {
     ctx.isOpen = false
+    await update($, paneOpen, () => false)
     await $.ui.close({ id: PANE })
     await publish($, undefined)
 
