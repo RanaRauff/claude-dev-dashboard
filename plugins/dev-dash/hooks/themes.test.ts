@@ -6,8 +6,8 @@ import type { Roles } from './themes'
 const ROLES = ['you', 'ok', 'warn', 'bad', 'info', 'accent', 'mute'] as const
 
 describe('themes', () => {
-  test('there are seven, Auto first, and each gives every role a colour', () => {
-    expect(THEMES.map(t => t.id)).toEqual(['auto', 'claude', 'nord', 'neon', 'crt', 'light', 'mono'])
+  test('there are eight, Auto first, and each gives every role a colour', () => {
+    expect(THEMES.map(t => t.id)).toEqual(['auto', 'claude', 'nord', 'neon', 'crt', 'light', 'hacker', 'mono'])
     for (const t of THEMES) for (const role of ROLES) expect(t.tone[role]).toMatch(/^(#[0-9A-F]{6}|[a-z]+)$/)
   })
 
@@ -27,6 +27,7 @@ describe('themes', () => {
   test('the next theme wraps around', () => {
     expect(nextTheme('auto')).toBe('claude')
     expect(nextTheme('mono')).toBe('auto')
+    expect(themeByName('Hacker')?.id).toBe('hacker')
   })
 
   test('applying a theme changes the live table, and an unknown id falls back to Auto', () => {

@@ -46,6 +46,12 @@ export const THEMES: ReadonlyArray<{ id: ThemeId; label: string; blurb: string; 
     tone: { you: '#BC4C00', ok: '#1A7F37', warn: '#9A6700', bad: '#CF222E', info: '#0969DA', accent: '#8250DF', mute: '#6E7781' },
   },
   {
+    id: 'hacker',
+    label: 'Hacker',
+    blurb: 'Terminal green on black, with red kept for danger. Best on a dark background.',
+    tone: { you: '#CCFFCC', ok: '#00FF41', warn: '#B6FF00', bad: '#FF3B3B', info: '#2DE2A6', accent: '#7CFF6B', mute: '#2E8B3E' },
+  },
+  {
     id: 'mono',
     label: 'Mono',
     blurb: 'For 16-colour terminals and colour-blind users: glyphs and weight only.',

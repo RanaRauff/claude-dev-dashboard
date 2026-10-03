@@ -209,7 +209,7 @@ export type Snapshot = {
   updatedAt: number
 }
 
-export type ThemeId = 'auto' | 'claude' | 'nord' | 'neon' | 'crt' | 'light' | 'mono'
+export type ThemeId = 'auto' | 'claude' | 'nord' | 'neon' | 'crt' | 'light' | 'mono' | 'hacker'
 
 export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files' | 'watching'
 
