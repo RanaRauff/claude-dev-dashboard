@@ -74,3 +74,17 @@ export function claudeBeat(activity: readonly number[], cells: number, rows = 5)
 
   return drawLine(scaleLevels(activity, width, height), height)
 }
+
+/**
+ * One agent's swimlane on a time axis shared by every agent: `·` before it started, `▬` while it ran, `·` after.
+ * `from`..`to` is the window; the agent ran `startedAt`..`endAt`.
+ */
+export const lane = (startedAt: number, endAt: number, from: number, to: number, cells: number) => {
+  const n = Math.max(1, Math.floor(cells))
+  const span = Math.max(1, to - from)
+  const at = (t: number) => Math.min(n, Math.max(0, ((t - from) / span) * n))
+  const a = Math.min(n - 1, Math.floor(at(startedAt)))
+  const b = Math.min(n, Math.max(a + 1, Math.ceil(at(endAt))))
+
+  return '·'.repeat(a) + '▬'.repeat(b - a) + '·'.repeat(n - b)
+}

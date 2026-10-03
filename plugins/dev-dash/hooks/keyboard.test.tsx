@@ -33,7 +33,7 @@ test('keyboard: rows open with Enter, actions copy, snooze and dismiss, footer b
   on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
   on('command.register', async () => ({ value: undefined }))
   on('clock.every', async () => ({ value: undefined }))
-  on('store.get', async () => ({ value: undefined }))
+  on('store.get', async (_$, e) => ({ value: e.key === 'focusOn' ? false : undefined }))
   on('store.set', async () => ({ value: undefined }))
   on('ui.open', async (_$, e) => {
     opened.push({ id: e.id, focus: e.focus })

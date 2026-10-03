@@ -88,6 +88,7 @@ const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
 const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
 const tab = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashboard')
 const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
+const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, false)
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
@@ -184,6 +185,7 @@ const ctx = {
   nowPlaying: null as NowPlaying | null,
   nowPlayingAt: 0,
   spotifyOn: false,
+  focusOn: true,
   plan: null as PlanProgress | null,
   planAt: 0,
   sources: [] as SourceRow[],
@@ -736,6 +738,7 @@ async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample
       disks: ctx.disks,
       nowPlaying: ctx.nowPlaying,
       spotifyOn: ctx.spotifyOn,
+      focusOn: ctx.focusOn,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       watches: ctx.watches,
@@ -921,6 +924,18 @@ async function setSpotify($: Engine, arg: string) {
     : 'Spotify is off. Nothing is read.'
 }
 
+// The focus fold is on by default: while something urgently needs you, the other cards fold to one line each.
+async function setFocus($: Engine, arg: string) {
+  const a = arg.trim().toLowerCase()
+  ctx.focusOn = a === 'on' ? true : a === 'off' ? false : !ctx.focusOn
+  await $.store.set('focusOn', ctx.focusOn).catch(() => undefined)
+  await publish($, undefined)
+
+  return ctx.focusOn
+    ? 'Focus is on: while something needs you, the other cards fold to one line each. Open one with its arrow.'
+    : 'Focus is off: every card stays as you left it.'
+}
+
 async function setAlerts($: Engine, arg: string) {
   const a = arg.trim().toLowerCase()
   ctx.alertsOn = a === 'on' ? true : a === 'off' ? false : !ctx.alertsOn
@@ -972,6 +987,9 @@ export const register: Register = on => {
     if (typeof stored === 'boolean') ctx.alertsOn = stored
     const storedBand = await $.store.get('bandOn').catch(() => undefined)
     if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    await $.command.register({ name: 'dash-focus', description: 'Fold the other cards to one line while something needs you (on | off, or toggle; on by default)' })
+    const storedFocus = await $.store.get('focusOn').catch(() => undefined)
+    if (typeof storedFocus === 'boolean') ctx.focusOn = storedFocus
     await $.command.register({ name: 'dash-spotify', description: 'Show what Spotify is playing on the Entertainment tab (on | off, or toggle; off by default)' })
     const storedSpotify = await $.store.get('spotifyOn').catch(() => undefined)
     if (typeof storedSpotify === 'boolean') ctx.spotifyOn = storedSpotify
@@ -996,6 +1014,10 @@ export const register: Register = on => {
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
     ctx.isOpen = (await read($, paneOpen)) === true
     await tick($, ctx.isOpen)
+    // The claude beat's tip blinks once a second while the pane is open. Only an atom flips: no data is collected.
+    $.clock.every(1000, async () => {
+      if (ctx.isOpen) await update($, blink, v => !v)
+    })
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1
       await tick($, ctx.isOpen && (ctx.prs === null || ctx.ticks % PR_EVERY_TICKS === 0))
@@ -1159,6 +1181,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
+  on('command.run', { command: 'dash-focus' }, async ($, e) => ({ text: await setFocus($, e.args ?? '') }))
   on('command.run', { command: 'dash-spotify' }, async ($, e) => ({ text: await setSpotify($, e.args ?? '') }))
 
   on('command.run', { command: 'dash-watch' }, async ($, e) => {

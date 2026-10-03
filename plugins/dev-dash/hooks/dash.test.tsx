@@ -38,6 +38,8 @@ const GH_GRAPHQL = JSON.stringify({
 })
 
 test('/dash shows attention, work in flight and PRs from git and gh', { timeoutMs: 15_000 }, async ($, on) => {
+  // These tests look at the cards' contents, so the focus fold (which would fold them) is off.
+  on('store.get', async (_$, e) => ({ value: e.key === 'focusOn' ? false : undefined }))
   const files = new Map<string, string>()
   const panes: string[] = []
   on('ui.open', async (_$, e) => {
@@ -71,6 +73,7 @@ test('/dash shows attention, work in flight and PRs from git and gh', { timeoutM
     return { value: hit ? hit[1] : '' }
   })
 
+  await $.command.run({ command: 'dash-focus', args: 'off' })
   const opened = await $.command.run({ command: 'dash', args: '' })
   expect(opened.text).toBe('Dashboard opened.')
   expect(panes).toEqual(['dev-dash'])
@@ -90,6 +93,8 @@ test('/dash shows attention, work in flight and PRs from git and gh', { timeoutM
 })
 
 test('lists every live Claude session, with or without the plugin', { timeoutMs: 15_000 }, async ($, on) => {
+  // These tests look at the cards' contents, so the focus fold (which would fold them) is off.
+  on('store.get', async (_$, e) => ({ value: e.key === 'focusOn' ? false : undefined }))
   const now = Date.now()
   const files = new Map<string, string>([
     ['/cfg/sessions/100.json', JSON.stringify({ pid: 100, sessionId: 'self', cwd: '/w/web', startedAt: now - 60_000, name: 'web work', entrypoint: 'cli', status: 'busy' })],
@@ -197,6 +202,8 @@ test('lists every live Claude session, with or without the plugin', { timeoutMs:
 })
 
 test('redesigned pane adapts to narrow and wide docks', { timeoutMs: 15_000 }, async ($, on) => {
+  // These tests look at the cards' contents, so the focus fold (which would fold them) is off.
+  on('store.get', async (_$, e) => ({ value: e.key === 'focusOn' ? false : undefined }))
   const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('ui.open', async (_$, e) => ({ value: { id: e.id } }))
   on('fs.write', async () => ({ value: undefined }))
@@ -214,6 +221,7 @@ test('redesigned pane adapts to narrow and wide docks', { timeoutMs: 15_000 }, a
     return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
 
+  await $.command.run({ command: 'dash-focus', args: 'off' })
   await $.command.run({ command: 'dash', args: '' })
   await new Promise(resolve => setTimeout(resolve, 300))
 

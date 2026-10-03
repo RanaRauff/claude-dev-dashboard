@@ -15,7 +15,7 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
-import { claudeBeat, effortOf } from './beat'
+import { claudeBeat, effortOf, lane } from './beat'
 import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './keys'
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
@@ -29,6 +29,8 @@ export const PANE = 'dev-dash'
 
 export const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 export const collapsed = atom({ plugin: 'dev-dash', key: 'collapsed' } as const, [])
+export const expanded = atom({ plugin: 'dev-dash', key: 'expanded' } as const, [])
+export const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, false)
 export const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 export const openRow = atom({ plugin: 'dev-dash', key: 'openRow' } as const, '')
 export const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
@@ -124,6 +126,7 @@ export const layoutFor = (cols: number | undefined) => {
 
 const where = (r: SessionRow) => (r.branch ? `${r.repo}@${r.branch}` : r.repo)
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+const FOCUS_FOLD: DashSection[] = ['sessions', 'agents', 'monitor', 'work', 'prs']
 const toggle = (list: readonly DashSection[] | undefined, id: DashSection) =>
   (list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]
 
@@ -180,6 +183,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const { Box, Button, Text } = $.ui.resolve(e)
     const s = await read($, snap)
     const folded = (await read($, collapsed)) ?? []
+    const opened2 = (await read($, expanded)) ?? []
+    const isPulse = (await read($, blink)) === true
     const samples = (await read($, activity)) ?? []
     const L = layoutFor(e.props.bodyColumns ?? (e.viewport ? e.viewport.columns - 2 : undefined))
     const { W, isNarrow } = L
@@ -204,7 +209,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     // A section heading: `▾ Title            meta`, and folded `▸ Title            summary`.
     // The plain Button with a hotkey is the fold control (pressable while the pane holds the keys).
     const Heading = (p: { id: DashSection; hotkey: string; title: string; tone?: string; summary: string }) => {
-      const isOpen = !folded.includes(p.id)
+      const isOpen = !shut.includes(p.id)
       return (
         <Box flexDirection="row">
           <Button
@@ -212,7 +217,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             plain
             hotkey={p.hotkey}
             label={isOpen ? '▾' : '▸'}
-            onPress={() => update($, collapsed, list => toggle(list, p.id))}
+            onPress={() => (isFocus && FOCUS_FOLD.includes(p.id) ? update($, expanded, list => toggle(list, p.id)) : update($, collapsed, list => toggle(list, p.id)))}
           />
           <Text bold color={p.tone}> {p.title} </Text>
           <Box flexGrow={1} />
@@ -282,8 +287,15 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     }
 
     const att = attentionOf(s, muting)
+    // Flight Deck focus: while something urgent needs you, the five big cards fold to one line each (open one with its
+    // arrow). `shut` is what is folded right now: the focus fold for those five, the person's own folds for the rest.
+    const isFocus = s.focusOn !== false && att.urgent > 0
+    const shut: DashSection[] = [
+      ...folded.filter(id => !(isFocus && FOCUS_FOLD.includes(id))),
+      ...(isFocus ? FOCUS_FOLD.filter(id => !opened2.includes(id)) : []),
+    ]
     const caps = { reviews: isNarrow ? 3 : 5, sessions: L.sessionRows, agents: isNarrow ? 4 : 8 }
-    const items = itemsOf(s, att, folded, caps)
+    const items = itemsOf(s, att, shut, caps)
     const g = s.git
     const costs = s.sessions.map(r => r.costUsd).filter((c): c is number => c !== null)
     const cost = costs.length ? costs.reduce((a, b) => a + b, 0) : null
@@ -331,9 +343,17 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
           </Box>
           <Box flexDirection="column">
-            {beat.map(row => (
-              <Text bold color="red">{row}</Text>
-            ))}
+            {beat.map(row => {
+              // The tip of the line (its newest sample) blinks, so a quiet pane still shows that it is alive.
+              const tip = row.slice(-1)
+              const isTip = tip !== ' ' && row.length > 1
+              return (
+                <Text bold color="red">
+                  {isTip ? row.slice(0, -1) : row}
+                  {isTip ? <Text bold color={isPulse ? 'white' : 'red'}>{isPulse ? '●' : tip}</Text> : null}
+                </Text>
+              )
+            })}
           </Box>
         </Box>
       </Box>
@@ -557,7 +577,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           title={`Sessions (${s.sessions.length})`}
           summary={`${live} running · ${att.waiting.length} waiting${cost !== null ? ` · ${money(cost)}` : ''}`}
         />
-        {!folded.includes('sessions') && (
+        {!shut.includes('sessions') && (
           <Box flexDirection="column">
             {s.sessions.length === 0 && <Text dimColor>No live Claude sessions.</Text>}
             {s.sessions.length > 0 && !s.summariesOn && !s.sessions.some(r => r.summary) && (
@@ -571,6 +591,9 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     )
 
     // ---- Agents -------------------------------------------------------------------
+    // One time axis for every agent shown, so the swimlanes line up: from the earliest start to now.
+    const laneFrom = Math.min(now, ...agents.slice(0, caps.agents).map(a => a.startedAt))
+    const laneCells = isNarrow ? 6 : 12
     const agentRow = (a: AgentRow) => {
       const look = AGENT_LOOK[a.state]
       const isLive = a.state === 'working'
@@ -585,7 +608,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             </Text>
             <Text dimColor> · {look.word} {age}</Text>
           </Box>
-          <Box paddingLeft={2}>
+          <Box paddingLeft={2} flexDirection="row">
+            <Text color={look.tone}>{lane(a.startedAt, isLive || a.state === 'quiet' ? now : a.lastActive, laneFrom, now, laneCells)} </Text>
             <Text dimColor wrap="truncate-end">
               {[a.type, a.sessionName, a.steps ? plural(a.steps, 'step') : ''].filter(Boolean).join(' · ')}
             </Text>
@@ -609,7 +633,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           tone={busyAgents.length > 0 ? TONE.accent : undefined}
           summary={`${busyAgents.length} working · ${agents.length - busyAgents.length} recent`}
         />
-        {!folded.includes('agents') && (
+        {!shut.includes('agents') && (
           <Box flexDirection="column">
             {agents.length === 0 && <Text dimColor>No subagents in the last 30 minutes.</Text>}
             {agents.slice(0, agentRows).map(agentRow)}
@@ -637,7 +661,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             .filter(Boolean)
             .join(' · ')}
         />
-        {!folded.includes('monitor') && (
+        {!shut.includes('monitor') && (
           <Box flexDirection="column">
             <Text dimColor>usage limits</Text>
             {limits.length === 0 && (
@@ -711,7 +735,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           title="Work in flight"
           summary={g ? `${g.branch} · ${g.dirty} dirty${merged.length ? ` · ${merged.length} merged` : ''}` : 'no repo'}
         />
-        {!folded.includes('work') && (
+        {!shut.includes('work') && (
           <Box flexDirection="column">
             {!g && <Text dimColor>Not a git repository.</Text>}
             {g && (
@@ -788,7 +812,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const prSection = (
       <Frame tone={TONE.warn}>
         <Heading id="prs" hotkey="6" title="PRs & CI" summary={prSummary} />
-        {!folded.includes('prs') && (
+        {!shut.includes('prs') && (
           <Box flexDirection="column">
             {!prs && <Text dimColor>loading…</Text>}
             {prs?.error && <Text color={TONE.warn} wrap="wrap">! {prs.error}</Text>}
