@@ -16,6 +16,7 @@ import type { On } from 'claude-code'
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { bytes, collisionsOf, isDiskLow } from './monitor'
 import { progressSections } from './progress-view'
+import { testBadge } from './testrun'
 import { watchingSection } from './watch-view'
 
 export const PANE = 'dev-dash'
@@ -351,6 +352,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           {r.summary && (
             <Box paddingLeft={7}>
               <Text color={TONE.info} wrap="truncate-end">↳ {cut(r.summary, W - 10)}</Text>
+            </Box>
+          )}
+          {r.lastTest && (
+            <Box paddingLeft={7}>
+              <Text color={r.lastTest.ok ? TONE.ok : TONE.bad} wrap="truncate-end">{testBadge(r.lastTest, now, ago)}</Text>
             </Box>
           )}
           {hasCtx ? (
