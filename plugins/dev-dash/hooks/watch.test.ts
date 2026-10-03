@@ -4,20 +4,29 @@ import {
   addWatch,
   checksOf,
   clearWatches,
+  describe as describeKind,
   describeChange,
+  describeIssueChange,
+  describeRunChange,
   isExpired,
   newWatch,
+  parseIssueRef,
   parsePrRef,
+  parseRunRef,
   parseWatchArgs,
   pollable,
+  readIssue,
   readPr,
+  readRun,
   stepWatch,
+  watchId,
+  watchName,
   WATCH_EXPIRY_MS,
   WATCHES_KEPT,
 } from './watch'
 
 const NOW = 1_800_000_000_000
-const ref = (n: number, repo = 'o/r') => ({ repo, number: n })
+const ref = (n: number, repo = 'o/r') => ({ kind: 'pr' as const, repo, number: n })
 
 describe('naming a pull request', () => {
   test('number, #number, owner/repo#number and URL', () => {
@@ -191,17 +200,129 @@ describe('the list', () => {
 })
 
 describe('the command', () => {
-  test('add, list, clear and help', () => {
-    expect(parseWatchArgs('pr 42')).toEqual({ cmd: 'add', ref: { repo: '', number: 42 } })
-    expect(parseWatchArgs('42')).toEqual({ cmd: 'add', ref: { repo: '', number: 42 } })
-    expect(parseWatchArgs('https://github.com/o/r/pull/9')).toEqual({ cmd: 'add', ref: { repo: 'o/r', number: 9 } })
-    expect(parseWatchArgs('PR o/r#3')).toEqual({ cmd: 'add', ref: { repo: 'o/r', number: 3 } })
+  test('pull requests: with the verb, bare, or as a URL', () => {
+    expect(parseWatchArgs('pr 42')).toEqual({ cmd: 'add', spec: { kind: 'pr', repo: '', number: 42 } })
+    expect(parseWatchArgs('42')).toEqual({ cmd: 'add', spec: { kind: 'pr', repo: '', number: 42 } })
+    expect(parseWatchArgs('https://github.com/o/r/pull/9')).toEqual({ cmd: 'add', spec: { kind: 'pr', repo: 'o/r', number: 9 } })
+    expect(parseWatchArgs('PR o/r#3')).toEqual({ cmd: 'add', spec: { kind: 'pr', repo: 'o/r', number: 3 } })
+  })
+
+  test('issues and runs: with the verb, or as a URL that says what it is', () => {
+    expect(parseWatchArgs('issue 12')).toEqual({ cmd: 'add', spec: { kind: 'issue', repo: '', number: 12 } })
+    expect(parseWatchArgs('issue o/r#5')).toEqual({ cmd: 'add', spec: { kind: 'issue', repo: 'o/r', number: 5 } })
+    expect(parseWatchArgs('issue https://github.com/o/r/issues/9')).toEqual({ cmd: 'add', spec: { kind: 'issue', repo: 'o/r', number: 9 } })
+    expect(parseWatchArgs('https://github.com/o/r/issues/9')).toEqual({ cmd: 'add', spec: { kind: 'issue', repo: 'o/r', number: 9 } })
+    expect(parseWatchArgs('run 99')).toEqual({ cmd: 'add', spec: { kind: 'run', repo: '', number: 99 } })
+    expect(parseWatchArgs('run https://github.com/o/r/actions/runs/123456789')).toEqual({ cmd: 'add', spec: { kind: 'run', repo: 'o/r', number: 123456789 } })
+    expect(parseWatchArgs('https://github.com/o/r/actions/runs/55')).toEqual({ cmd: 'add', spec: { kind: 'run', repo: 'o/r', number: 55 } })
+  })
+
+  test('list, clear and help', () => {
     expect(parseWatchArgs('')).toEqual({ cmd: 'list' })
     expect(parseWatchArgs(' list ')).toEqual({ cmd: 'list' })
     expect(parseWatchArgs('clear 2')).toEqual({ cmd: 'clear', which: '2' })
     expect(parseWatchArgs('clear all')).toEqual({ cmd: 'clear', which: 'all' })
     expect(parseWatchArgs('clear').cmd).toBe('help')
     expect(parseWatchArgs('pr').cmd).toBe('help')
+    expect(parseWatchArgs('issue abc').cmd).toBe('help')
+    expect(parseWatchArgs('run').cmd).toBe('help')
     expect(parseWatchArgs('jenkins job x').cmd).toBe('help')
+  })
+})
+
+describe('issues', () => {
+  test('naming one: a number, owner/repo#number or an issues URL, not a pull request URL', () => {
+    expect(parseIssueRef('12')).toEqual({ repo: '', number: 12 })
+    expect(parseIssueRef('o/r#5')).toEqual({ repo: 'o/r', number: 5 })
+    expect(parseIssueRef('https://github.com/o/r/issues/9')).toEqual({ repo: 'o/r', number: 9 })
+    expect(parseIssueRef('https://github.com/o/r/pull/9')).toBeNull()
+  })
+
+  test('open: comments, who it is assigned to', () => {
+    const r = readIssue({ state: 'OPEN', title: ' Crash on start ', comments: [{}, {}], labels: [{ name: 'ui' }, { name: 'bug' }], assignees: [{ login: 'ana' }] })
+    expect(r?.value).toBe('OPEN|2|bug,ui|ana')
+    expect(r?.detail).toBe('open · 2 comments · assigned to ana')
+    expect(r?.title).toBe('Crash on start')
+    expect(r?.done).toBe(false)
+  })
+
+  test('unassigned and uncommented say so', () => {
+    expect(readIssue({ state: 'OPEN', comments: [{}] })?.detail).toBe('open · 1 comment · unassigned')
+    expect(readIssue({ state: 'OPEN' })?.detail).toBe('open · 0 comments · unassigned')
+  })
+
+  test('closed is over, and says when it was not planned; garbage is not a reading', () => {
+    expect(readIssue({ state: 'CLOSED', stateReason: 'COMPLETED' })?.detail).toBe('closed')
+    expect(readIssue({ state: 'CLOSED', stateReason: 'NOT_PLANNED' })?.detail).toBe('not planned')
+    expect(readIssue({ state: 'CLOSED' })?.done).toBe(true)
+    expect(readIssue({ state: 'MERGED' })).toBeNull()
+    expect(readIssue(null)).toBeNull()
+  })
+
+  test('says what changed', () => {
+    expect(describeIssueChange('OPEN|2|bug|ana', 'OPEN|3|bug|ana')).toBe('new comment')
+    expect(describeIssueChange('OPEN|2|bug|ana', 'OPEN|4|bug|ana')).toBe('2 new comments')
+    expect(describeIssueChange('OPEN|2|bug|', 'OPEN|2|bug|ana')).toBe('assigned')
+    expect(describeIssueChange('OPEN|2|bug|ana', 'OPEN|2|bug|')).toBe('unassigned')
+    expect(describeIssueChange('OPEN|2|bug|ana', 'OPEN|2|bug,ui|ana')).toBe('labels changed')
+    expect(describeIssueChange('OPEN|2|bug|ana', 'CLOSED|2|bug|ana')).toBe('closed')
+    expect(describeIssueChange('CLOSED|2|bug|ana', 'OPEN|2|bug|ana')).toBe('reopened')
+  })
+})
+
+describe('Actions runs', () => {
+  test('naming one: a run id or an actions/runs URL', () => {
+    expect(parseRunRef('99')).toEqual({ repo: '', number: 99 })
+    expect(parseRunRef('https://github.com/o/r/actions/runs/123456789')).toEqual({ repo: 'o/r', number: 123456789 })
+    expect(parseRunRef('https://github.com/o/r/issues/9')).toBeNull()
+  })
+
+  test('queued, running, passed, failed, cancelled', () => {
+    const run = (status: string, conclusion = '') => readRun({ status, conclusion, workflowName: 'CI', headBranch: 'main' })
+    expect(run('queued')?.detail).toBe('queued')
+    expect(run('in_progress')?.detail).toBe('running')
+    expect(run('in_progress')?.done).toBe(false)
+    expect(run('completed', 'success')?.detail).toBe('passed')
+    expect(run('completed', 'success')?.done).toBe(true)
+    expect(run('completed', 'failure')?.detail).toBe('failed')
+    expect(run('completed', 'cancelled')?.detail).toBe('cancelled')
+    expect(run('completed', 'success')?.title).toBe('CI · main')
+  })
+
+  test('not a run, and what changed', () => {
+    expect(readRun({})).toBeNull()
+    expect(readRun(null)).toBeNull()
+    expect(describeRunChange('in_progress|', 'completed|failure')).toBe('failed')
+    expect(describeRunChange('in_progress|', 'completed|success')).toBe('passed')
+  })
+})
+
+describe('one list for every kind', () => {
+  test('each kind describes its own change', () => {
+    expect(describeKind('pr', 'OPEN|pending|none', 'OPEN|failing|none')).toBe('CI failing')
+    expect(describeKind('issue', 'OPEN|1||', 'OPEN|2||')).toBe('new comment')
+    expect(describeKind('run', 'in_progress|', 'completed|success')).toBe('passed')
+  })
+
+  test('a watch of each kind fires on its own kind of change', () => {
+    const look = (value: string, detail: string) => ({ value, detail, title: 'T', done: false })
+    const issue = stepWatch(stepWatch(newWatch({ kind: 'issue', repo: 'o/r', number: 4 }, NOW), look('OPEN|1||', 'open'), NOW), look('OPEN|2||', 'open'), NOW + 60_000)
+    expect(issue.fired).toBe('new comment')
+    const run = stepWatch(stepWatch(newWatch({ kind: 'run', repo: 'o/r', number: 99 }, NOW), look('in_progress|', 'running'), NOW), look('completed|failure', 'failed'), NOW + 60_000)
+    expect(run.fired).toBe('failed')
+  })
+
+  test('the same number as a PR, an issue and a run are three watches', () => {
+    let list = addWatch([], { kind: 'pr', repo: 'o/r', number: 6 }, NOW).list
+    list = addWatch(list, { kind: 'issue', repo: 'o/r', number: 6 }, NOW).list
+    list = addWatch(list, { kind: 'run', repo: 'o/r', number: 6 }, NOW).list
+    expect(list.map(w => w.id)).toEqual(['pr:o/r#6', 'issue:o/r#6', 'run:o/r#6'])
+    expect(watchId({ kind: 'issue', repo: 'O/R', number: 6 })).toBe('issue:o/r#6')
+  })
+
+  test('what a watch is called on screen', () => {
+    expect(watchName({ kind: 'pr', number: 11 })).toBe('PR #11')
+    expect(watchName({ kind: 'issue', number: 4 })).toBe('Issue #4')
+    expect(watchName({ kind: 'run', number: 123456 })).toBe('Run #123456')
   })
 })

@@ -124,13 +124,17 @@ export type PrRow = {
 
 export type PrInfo = { error: string | null; mine: PrRow[]; toReview: PrRow[]; fetchedAt: number }
 
-/** A pull request the person asked to keep an eye on with /dash-watch. */
+/** What /dash-watch can keep an eye on: a GitHub pull request, issue or Actions run. */
+export type WatchKind = 'pr' | 'issue' | 'run'
+
+/** Something the person asked to keep an eye on with /dash-watch. */
 export type WatchRow = {
-  /** `pr:<owner/repo>#<number>`, lower case. */
+  /** `pr:<owner/repo>#<number>`, `issue:…` or `run:…`, lower case. */
   id: string
-  kind: 'pr'
+  kind: WatchKind
   /** `owner/repo`. */
   repo: string
+  /** The pull request or issue number, or the Actions run id. */
   number: number
   title: string
   addedAt: number

@@ -3,6 +3,7 @@
 // Hidden when nothing is watched.
 
 import type { DashSection, WatchRow } from '../types'
+import { watchName } from './watch'
 
 // The Box, Text and Heading render.tsx resolved for this render.
 // biome-ignore lint/suspicious/noExplicitAny: element components come from `$.ui.resolve(e)`
@@ -34,13 +35,13 @@ export function watchingSection(v: WatchView) {
         hotkey="0"
         title={fired.length ? `Watching (${watches.length} · ${fired.length} fired)` : `Watching (${watches.length})`}
         tone={fired.length ? tone.warn : undefined}
-        summary={fired.length ? fired.map(w => `#${w.number} ${w.fired}`).join(' · ') : `${watches.length} quiet`}
+        summary={fired.length ? fired.map(w => `${watchName(w)} ${w.fired}`).join(' · ') : `${watches.length} quiet`}
       />
       {!folded.includes('watching') && (
         <Box flexDirection="column" paddingLeft={2}>
           {watches.map((w, i) => {
             const isFired = w.firedAt > 0
-            const name = `#${w.number} ${short(w.repo)}`
+            const name = `${watchName(w)} ${short(w.repo)}`
             return (
               <Box flexDirection="column">
                 <Box flexDirection="row">
