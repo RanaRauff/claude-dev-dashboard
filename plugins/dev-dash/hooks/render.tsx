@@ -194,14 +194,19 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const storedTab = await read($, tabState)
     const tab = isTab(storedTab) ? storedTab : 'dashboard'
 
-    const rule = (used: number) => '─'.repeat(clamp(W - used, 0, W))
+    // A card: the Flight Deck look. A rounded border in the section's colour; the heading is its first line.
+    const Frame = (p: { tone?: string; children?: unknown }) => (
+      <Box borderStyle="round" borderColor={p.tone ?? TONE.mute} paddingX={1} flexDirection="column" width={W}>
+        {p.children}
+      </Box>
+    )
 
-    // A section heading: `1: ▾ Title ─────────`, or, folded, `1: ▸ Title  summary`.
+    // A section heading: `▾ Title            meta`, and folded `▸ Title            summary`.
     // The plain Button with a hotkey is the fold control (pressable while the pane holds the keys).
     const Heading = (p: { id: DashSection; hotkey: string; title: string; tone?: string; summary: string }) => {
       const isOpen = !folded.includes(p.id)
       return (
-        <Box flexDirection="row" marginTop={1}>
+        <Box flexDirection="row">
           <Button
             key={`fold-${p.id}`}
             plain
@@ -210,11 +215,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             onPress={() => update($, collapsed, list => toggle(list, p.id))}
           />
           <Text bold color={p.tone}> {p.title} </Text>
-          {isOpen ? (
-            <Text dimColor wrap="truncate-end">{rule(p.title.length + 6)}</Text>
-          ) : (
-            <Text dimColor wrap="truncate-end">{cut(p.summary, W - p.title.length - 7)}</Text>
-          )}
+          <Box flexGrow={1} />
+          <Text dimColor wrap="truncate-end">{cut(p.summary, Math.max(8, W - p.title.length - 12))}</Text>
         </Box>
       )
     }
@@ -296,6 +298,15 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     // ---- header card ------------------------------------------------------
     const header = (
       <Box borderStyle="round" borderColor={headTone} paddingX={1} flexDirection="column" width={W}>
+        <Box flexDirection="row" justifyContent="center">
+          <Text bold>DEV-DASH</Text>
+        </Box>
+        <Box flexDirection="row" justifyContent="center" columnGap={1}>
+          <Text color={TONE.warn}>■ you</Text>
+          <Text color={TONE.info}>■ sessions</Text>
+          <Text color={TONE.accent}>■ agents</Text>
+          <Text color={TONE.ok}>■ limits</Text>
+        </Box>
         <Box flexDirection="row" flexWrap="wrap">
           <Text bold color={headTone}>{att.total > 0 ? `◆ ${att.total} need${att.total === 1 ? 's' : ''} you` : '✓ all clear'}</Text>
           <Text dimColor> · {plural(s.sessions.length, isNarrow ? 'sess' : 'session', isNarrow ? 'sess' : 'sessions')}</Text>
@@ -328,9 +339,69 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       </Box>
     )
 
+    // ---- Focus: the one thing that needs you grows into a card; the rest wait in a short queue -------------------
+    type Need = { id: string; tone: string; glyph: string; name: string; verb: string; say: string; age: string; row?: SessionRow }
+    const needs: Need[] = [
+      ...att.waiting.map(r => ({ id: ids.wait(r), tone: TONE.warn, glyph: '◆', name: r.name || where(r), verb: 'waiting on you', say: r.waitingFor || 'waiting', age: ago(now - r.stateSince), row: r })),
+      ...att.stuck.map(r => ({ id: ids.stuck(r), tone: TONE.bad, glyph: '⟳', name: r.name || where(r), verb: 'may be stuck', say: String(r.stuck), age: ago(now - r.stateSince), row: r })),
+      ...att.risky.map(r => ({ id: ids.risky(r), tone: TONE.bad, glyph: '⚡', name: r.name || where(r), verb: 'ran something risky', say: String(r.risky), age: ago(now - r.stateSince), row: r })),
+      ...att.disks.map(d => ({ id: ids.disk(d), tone: TONE.bad, glyph: '▼', name: `disk ${d.name}`, verb: 'is low', say: `${bytes(d.freeBytes)} free of ${bytes(d.totalBytes)}`, age: '' })),
+      ...att.collisions.map(c => ({ id: ids.clash(c.file), tone: TONE.bad, glyph: '⚠', name: c.file.split('/').pop() ?? c.file, verb: 'edited twice', say: `edited by ${c.sessions.join(' + ')}`, age: '' })),
+      ...att.limits.map(l => ({ id: ids.limit(l), tone: TONE.bad, glyph: '▲', name: `${l.kind} limit`, verb: `${Math.round(l.pct)}%`, say: limitNote(l, now), age: '' })),
+      ...att.failing.map(p => ({ id: ids.ci(p), tone: TONE.bad, glyph: '✗', name: `#${p.number}`, verb: p.conflicts ? 'has conflicts' : 'CI failing', say: `${p.repo ? `${p.repo} · ` : ''}${p.title}`, age: '' })),
+      ...att.reviews.map(p => ({ id: ids.review(p), tone: TONE.info, glyph: '◎', name: `#${p.number}`, verb: 'wants your review', say: `@${p.author} · ${p.repo ? `${p.repo} · ` : ''}${p.title}`, age: `${p.ageDays}d` })),
+    ]
+    const lead = needs[0]
+    const leadItem = lead ? itemById(items, lead.id) : undefined
+    const focus = lead ? (
+      <Frame tone={lead.tone}>
+        <Box flexDirection="row">
+          <Text bold color={lead.tone} wrap="truncate-end">{lead.glyph} {cut(lead.name, W - 30)} · {lead.verb}</Text>
+          <Box flexGrow={1} />
+          <Text dimColor>{lead.age ? `${lead.age} · ` : ''}1 of {needs.length}</Text>
+        </Box>
+        {lead.row && (
+          <Text dimColor wrap="truncate-end">
+            {[where(lead.row), lead.row.contextPct !== null ? `ctx ${Math.round(lead.row.contextPct)}%` : '', lead.row.costUsd !== null ? money(lead.row.costUsd) : ''].filter(Boolean).join(' · ')}
+          </Text>
+        )}
+        <Text wrap="wrap">“{cut(lead.say, W * 2 - 12)}”</Text>
+        {lead.row?.lastTool && (
+          <Text dimColor wrap="truncate-end">last step <Text color={TONE.info}>{lead.row.lastTool}</Text></Text>
+        )}
+        {leadItem && (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
+            {actionsFor(leadItem).map(a => (
+              <Button key={`focus-${a.id}`} label={a.label} onPress={() => runAction(a.id, leadItem)} />
+            ))}
+          </Box>
+        )}
+        {needs.slice(1, 3).map((n, i) => (
+          <Box flexDirection="row">
+            <Text dimColor>{i === 0 ? 'next ' : 'then '}</Text>
+            <Text color={n.tone} wrap="truncate-end">{n.glyph} {cut(`${n.name} ${n.verb}`, W - 20)}</Text>
+            <Box flexGrow={1} />
+            <Text dimColor>{n.age}</Text>
+          </Box>
+        ))}
+      </Frame>
+    ) : (
+      <Frame tone={TONE.ok}>
+        <Box flexDirection="row">
+          <Text bold color={TONE.ok}>✓ nothing needs you</Text>
+          <Box flexGrow={1} />
+          <Text dimColor>checked {ago(now - s.updatedAt)} ago</Text>
+        </Box>
+        <Text wrap="truncate-end">{s.sessions.length === 0 ? 'No live sessions.' : `${plural(live, 'session')} working, ${s.sessions.length - live} idle or waiting.`}</Text>
+        {(s.events ?? [])[0] && (
+          <Text dimColor wrap="truncate-end">last: {cut(s.events[0].text, W - 22)} · {ago(now - s.events[0].at)} ago</Text>
+        )}
+      </Frame>
+    )
+
     // ---- Attention ----------------------------------------------------------
     const attention = (
-      <Box flexDirection="column">
+      <Frame tone={headTone}>
         <Heading
           id="attention"
           hotkey="1"
@@ -354,7 +425,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           }
         />
         {!folded.includes('attention') && (
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column">
             {att.total === 0 && <Text color={TONE.ok}>✓ Nothing needs you.</Text>}
             {att.total === 0 && (
               <Text dimColor wrap="truncate-end">
@@ -428,7 +499,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             )}
           </Box>
         )}
-      </Box>
+      </Frame>
     )
 
     // ---- Sessions -------------------------------------------------------------
@@ -479,7 +550,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       )
     }
     const sessions = (
-      <Box flexDirection="column">
+      <Frame tone={TONE.info}>
         <Heading
           id="sessions"
           hotkey="2"
@@ -487,7 +558,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           summary={`${live} running · ${att.waiting.length} waiting${cost !== null ? ` · ${money(cost)}` : ''}`}
         />
         {!folded.includes('sessions') && (
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column">
             {s.sessions.length === 0 && <Text dimColor>No live Claude sessions.</Text>}
             {s.sessions.length > 0 && !s.summariesOn && !s.sessions.some(r => r.summary) && (
               <Text dimColor wrap="truncate-end">/dash-summaries on adds a one-line "doing" per session</Text>
@@ -496,7 +567,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             {s.sessions.length > L.sessionRows && <Text dimColor>+{s.sessions.length - L.sessionRows} more</Text>}
           </Box>
         )}
-      </Box>
+      </Frame>
     )
 
     // ---- Agents -------------------------------------------------------------------
@@ -530,7 +601,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     }
     const agentRows = caps.agents
     const agentsSection = (
-      <Box flexDirection="column">
+      <Frame tone={TONE.accent}>
         <Heading
           id="agents"
           hotkey="3"
@@ -539,20 +610,20 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           summary={`${busyAgents.length} working · ${agents.length - busyAgents.length} recent`}
         />
         {!folded.includes('agents') && (
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column">
             {agents.length === 0 && <Text dimColor>No subagents in the last 30 minutes.</Text>}
             {agents.slice(0, agentRows).map(agentRow)}
             {agents.length > agentRows && <Text dimColor>+{agents.length - agentRows} more</Text>}
           </Box>
         )}
-      </Box>
+      </Frame>
     )
 
     // ---- Monitor ------------------------------------------------------------------
     const withCtx = s.sessions.filter(r => r.contextPct !== null)
     const events = (s.events ?? []).slice(0, isNarrow ? 5 : 8)
     const monitor = (
-      <Box flexDirection="column">
+      <Frame tone={att.limits.length > 0 ? TONE.bad : TONE.ok}>
         <Heading
           id="monitor"
           hotkey="4"
@@ -567,7 +638,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             .join(' · ')}
         />
         {!folded.includes('monitor') && (
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column">
             <Text dimColor>usage limits</Text>
             {limits.length === 0 && (
               <Text dimColor wrap="wrap">{'  '}not reported yet (shows after the first reply on a Pro/Max plan)</Text>
@@ -625,7 +696,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             ))}
           </Box>
         )}
-      </Box>
+      </Frame>
     )
 
     // ---- Work in flight -------------------------------------------------------
@@ -633,7 +704,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const others = g ? g.branches.filter(b => b.name !== g.branch) : []
     const merged = others.filter(b => b.isMerged)
     const work = (
-      <Box flexDirection="column">
+      <Frame tone={TONE.mute}>
         <Heading
           id="work"
           hotkey="5"
@@ -641,7 +712,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           summary={g ? `${g.branch} · ${g.dirty} dirty${merged.length ? ` · ${merged.length} merged` : ''}` : 'no repo'}
         />
         {!folded.includes('work') && (
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column">
             {!g && <Text dimColor>Not a git repository.</Text>}
             {g && (
               <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -684,7 +755,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
               })}
           </Box>
         )}
-      </Box>
+      </Frame>
     )
 
     // ---- PRs & CI -------------------------------------------------------------
@@ -715,10 +786,10 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const prs = s.prs
     const prSummary = !prs ? 'loading' : prs.error ? 'gh unavailable' : `${prs.mine.length} mine · ${prs.toReview.length} to review`
     const prSection = (
-      <Box flexDirection="column">
+      <Frame tone={TONE.warn}>
         <Heading id="prs" hotkey="6" title="PRs & CI" summary={prSummary} />
         {!folded.includes('prs') && (
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column">
             {!prs && <Text dimColor>loading…</Text>}
             {prs?.error && <Text color={TONE.warn} wrap="wrap">! {prs.error}</Text>}
             {prs && !prs.error && (
@@ -740,9 +811,10 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             )}
           </Box>
         )}
-      </Box>
+      </Frame>
     )
 
+    const framed = (node: unknown, tone: string) => (node ? <Frame tone={tone}>{node}</Frame> : null)
     const watching = watchingSection({
       Box,
       Text,
@@ -762,7 +834,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       folded,
       sessions: s.sessions,
       selfId: s.selfId,
-      W,
+      W: W - 4,
       isNarrow,
       now,
       tone: TONE,
@@ -829,15 +901,16 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         {tab === 'dashboard' ? header : statusLine}
         {helpPanel}
         {tab === 'dashboard' && watching}
+        {tab === 'dashboard' && focus}
         {tab === 'dashboard' && attention}
         {tab === 'dashboard' && sessions}
         {tab === 'dashboard' && agentsSection}
         {tab === 'dashboard' && monitor}
         {tab === 'dashboard' && work}
         {tab === 'dashboard' && prSection}
-        {tab === 'dashboard' && progress.plan}
-        {tab === 'dashboard' && progress.sources}
-        {tab === 'dashboard' && progress.files}
+        {tab === 'dashboard' && framed(progress.plan, TONE.accent)}
+        {tab === 'dashboard' && framed(progress.sources, TONE.info)}
+        {tab === 'dashboard' && framed(progress.files, TONE.mute)}
         {tab === 'entertainment' && entertainmentView(tabView, s.nowPlaying ?? null, s.spotifyOn === true)}
         {tab === 'custom' && customView(tabView)}
         {footer}

@@ -111,6 +111,17 @@ test('keyboard: rows open with Enter, actions copy, snooze and dismiss, footer b
   await press('act-copy-s:self')
   expect(copied.pop()).toBe('claude --resume self')
 
+  // Flight Deck focus card: the first thing that needs you grows into a card with its actions and "1 of N".
+  await need(/waiting on you/)
+  await need(/^“input needed”$/)
+  expect(await hasKey(`focus-copy`)).toBe(true)
+  expect(await hasKey(`focus-snooze`)).toBe(true)
+  await press('focus-snooze')
+  if (await has(/waiting on you/)) throw new Error('the focus card still shows a snoozed session')
+  await need(/nothing needs you/)
+  await press('act-undo')
+  await need(/waiting on you/)
+
   // Snooze hides the Attention row and says so; the button brings it back.
   await press(`pick-${waitId}`)
   await press(`act-snooze-${waitId}`)
