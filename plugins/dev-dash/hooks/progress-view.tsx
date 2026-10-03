@@ -92,7 +92,9 @@ export function progressSections(v: ProgressView) {
       />
       {!folded.includes('sources') && (
         <Box flexDirection="column" paddingLeft={2}>
-          {sources.length === 0 && <Text dimColor>Nothing fetched or searched yet.</Text>}
+          {sources.length === 0 && (
+            <Text dimColor wrap="truncate-end">Nothing yet: fills when a session running dev-dash uses WebFetch or WebSearch.</Text>
+          )}
           {shown.map(s => (
             <Text wrap="truncate-end">
               <Text color={s.kind === 'fetch' ? tone.info : tone.ok}>{s.kind === 'fetch' ? '↓' : '⌕'} </Text>
@@ -109,34 +111,42 @@ export function progressSections(v: ProgressView) {
   // ---- Files: what each session changed this turn --------------------------------
   const changed = live.filter(r => (r.turnFiles ?? []).length > 0)
   const all: ChangedFile[] = changed.flatMap(r => r.turnFiles ?? [])
-  const sum = totals(all)
+  // A file git could not count (`counted: false`) is listed as edited, without made-up +/- numbers.
+  const isCounted = (f: ChangedFile) => f.counted !== false
+  const sum = totals(all.filter(isCounted))
   const files = (
     <Box flexDirection="column">
       <Heading
         id="files"
         hotkey="9"
         title={`Files (${all.length})`}
-        summary={all.length ? `${plural(all.length, 'file')} · +${sum.added} -${sum.removed}` : 'no edits this turn'}
+        summary={all.length ? `${plural(all.length, 'file')}${all.some(isCounted) ? ` · +${sum.added} -${sum.removed}` : ''}` : 'no edits this turn'}
       />
       {!folded.includes('files') && (
         <Box flexDirection="column" paddingLeft={2}>
-          {changed.length === 0 && <Text dimColor>No session has edited files this turn.</Text>}
+          {changed.length === 0 && (
+            <Text dimColor wrap="truncate-end">No session running dev-dash has edited a file in its current turn.</Text>
+          )}
           {changed.map(r => {
-            const t = totals(r.turnFiles ?? [])
+            const t = totals((r.turnFiles ?? []).filter(isCounted))
             const rows = (r.turnFiles ?? []).slice(0, isNarrow ? 3 : 5)
             return (
               <Box flexDirection="column">
                 <Box flexDirection="row">
                   <Text bold={r.id === v.selfId} wrap="truncate-end">{fmt.cut(label(r), W - 22)}</Text>
                   <Text dimColor> · {plural((r.turnFiles ?? []).length, 'file')} </Text>
-                  <Text color={tone.ok}>+{t.added}</Text>
-                  <Text color={tone.bad}> -{t.removed}</Text>
+                  {(r.turnFiles ?? []).some(isCounted) && <Text color={tone.ok}>+{t.added}</Text>}
+                  {(r.turnFiles ?? []).some(isCounted) && <Text color={tone.bad}> -{t.removed}</Text>}
                 </Box>
                 {rows.map(f => (
                   <Box paddingLeft={2} flexDirection="row">
                     <Text wrap="truncate-end">{fmt.cut(baseName(f.path), W - 18)}</Text>
-                    <Text color={tone.ok}> +{f.added}</Text>
-                    <Text color={tone.bad}> -{f.removed}</Text>
+                    {isCounted(f) ? (
+                      <Text color={tone.ok}> +{f.added}</Text>
+                    ) : (
+                      <Text dimColor> edited</Text>
+                    )}
+                    {isCounted(f) && <Text color={tone.bad}> -{f.removed}</Text>}
                   </Box>
                 ))}
                 {(r.turnFiles ?? []).length > rows.length && (

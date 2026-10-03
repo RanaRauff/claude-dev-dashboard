@@ -18,6 +18,9 @@ import type {
   Snapshot,
   SourceRow,
   TestRun,
+  IconStyle,
+  WatchKind,
+  WatchRow,
   WorktreeRow,
 } from '../types'
 import {
@@ -45,11 +48,31 @@ import {
   tidySummary,
 } from './monitor'
 import type { AgentMeta, AgentSummary, CallMark, Sample } from './monitor'
+import { runExe as runExeWith } from './exe'
 import { HANDOFFS_KEPT, handoffName, handoffNote, staleNotes } from './handoff'
 import { isMuted } from './keys'
+import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
 import { pushActivity, registerDashPane } from './render'
+import type { Reading } from './watch'
+import {
+  addWatch,
+  clearWatches,
+  isExpired,
+  ISSUE_FIELDS,
+  parseWatchArgs,
+  pollable,
+  PR_FIELDS,
+  readIssue,
+  readPr,
+  readRun,
+  RUN_FIELDS,
+  stepWatch,
+  WATCH_EVERY_MS,
+  WATCH_HELP,
+  watchName,
+} from './watch'
 
 const PANE = 'dev-dash'
 const TICK_MS = 5000
@@ -157,6 +180,9 @@ const ctx = {
   turnEdits: new Map<string, string>(),
   turnFiles: [] as ChangedFile[],
   lastTest: null as TestRun | null,
+  watches: [] as WatchRow[],
+  watchPolledAt: 0,
+  iconStyle: DEFAULT_ICON_STYLE as IconStyle,
 }
 
 const RISKY_WINDOW_MS = 10 * 60_000
@@ -195,9 +221,36 @@ const me = {
   lastTest: null as TestRun | null,
 }
 
+// Run `git` or `gh`. The process Claude Code runs in can have an older PATH than the machine: an app that was
+// started before they were installed keeps its old environment until it is restarted. So if the program cannot be
+// started on Windows, try its standard install folder before giving up, and remember whichever worked.
+// What could go wrong: the fallback paths are fixed strings under %ProgramFiles%, the arguments are passed as an
+// array with no shell, and a path that stops working is forgotten and looked up again.
+const WINDOWS_INSTALLS: Record<'git' | 'gh', (programFiles: string) => string[]> = {
+  gh: pf => [`${pf}\\GitHub CLI\\gh.exe`],
+  git: pf => [`${pf}\\Git\\cmd\\git.exe`, `${pf}\\Git\\bin\\git.exe`],
+}
+const exeFound = new Map<string, string>()
+
+// The lookup logic is in exe.ts (it tells a timeout from a program that is not there by how long the call ran, since
+// the API gives no wording for either); this wires it to the engine.
+const runExe = ($: Engine, name: 'git' | 'gh', args: string[], timeoutMs: number) =>
+  runExeWith({
+    run: (argv, timeout) => $.process.run(argv, { timeoutMs: timeout }),
+    name,
+    args,
+    timeoutMs,
+    found: exeFound,
+    fallbacks: async () => {
+      const programFiles = (await $.env.get('OS')) === 'Windows_NT' ? await $.env.get('ProgramFiles') : undefined
+
+      return programFiles ? WINDOWS_INSTALLS[name](programFiles) : []
+    },
+  })
+
 async function git($: Engine, args: string[]) {
   try {
-    const r = await $.process.run(['git', ...args], { timeoutMs: 10_000 })
+    const r = await runExe($, 'git', args, 10_000)
     return r.exitCode === 0 ? r.stdout : null
   } catch {
     return null
@@ -571,11 +624,13 @@ async function readGit($: Engine): Promise<GitInfo | null> {
   }
 }
 
+const runGh = ($: Engine, args: string[], timeoutMs: number) => runExe($, 'gh', args, timeoutMs)
+
 async function readPrs($: Engine): Promise<PrInfo> {
   try {
-    const r = await $.process.run(
+    const r = await runGh(
+      $,
       [
-        'gh',
         'api',
         'graphql',
         '-f',
@@ -585,7 +640,7 @@ async function readPrs($: Engine): Promise<PrInfo> {
         '-f',
         'review=is:pr is:open review-requested:@me archived:false',
       ],
-      { timeoutMs: 20_000 },
+      20_000,
     )
     if (r.exitCode !== 0) throw new Error(lines(r.stderr)[0] ?? 'gh failed')
     const data = (JSON.parse(r.stdout) as { data?: { mine?: { nodes?: GhPr[] }; review?: { nodes?: GhPr[] } } }).data
@@ -667,6 +722,8 @@ async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample
       disks: ctx.disks,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
+      watches: ctx.watches,
+      iconStyle: ctx.iconStyle,
       updatedAt: Date.now(),
     }
     return next
@@ -694,7 +751,14 @@ async function setState($: Engine, state: SessionState) {
 async function readTurnFiles($: Engine): Promise<ChangedFile[]> {
   const files: ChangedFile[] = []
   for (const file of [...ctx.turnEdits.values()].slice(-TURN_FILES_KEPT)) {
-    const diff = parseNumstat((await git($, ['diff', '--numstat', 'HEAD', '--', file])) ?? '')[0]
+    const out = await git($, ['diff', '--numstat', 'HEAD', '--', file])
+    // git could not answer (not found, not a repository, or the file is outside one): the file was still edited
+    // this turn, so it is listed, with its line counts marked as unknown rather than left out.
+    if (out === null) {
+      files.push({ path: file, added: 0, removed: 0, counted: false })
+      continue
+    }
+    const diff = parseNumstat(out)[0]
     if (diff) {
       files.push({ path: file, added: diff.added, removed: diff.removed })
       continue
@@ -723,6 +787,57 @@ async function pruneHandoffs($: Engine) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// /dash-watch: pull requests the person asked to keep an eye on
+// ---------------------------------------------------------------------------
+const isWatchRow = (v: unknown): v is WatchRow =>
+  !!v && typeof v === 'object' && typeof (v as WatchRow).id === 'string' && typeof (v as WatchRow).number === 'number' && typeof (v as WatchRow).repo === 'string'
+
+// The list lives in the plugin store, so every session sees the same one; each cycle starts from it.
+async function loadWatches($: Engine): Promise<WatchRow[]> {
+  const v = await $.store.get('watches').catch(() => undefined)
+
+  return Array.isArray(v) ? v.filter(isWatchRow) : []
+}
+
+// How each kind is read: the gh subcommand, the fields asked for, and the function that turns the answer into a reading.
+const GH_READ: Record<WatchKind, { args: string[]; fields: string; read: (json: unknown) => Reading | null }> = {
+  pr: { args: ['pr', 'view'], fields: PR_FIELDS, read: readPr },
+  issue: { args: ['issue', 'view'], fields: ISSUE_FIELDS, read: readIssue },
+  run: { args: ['run', 'view'], fields: RUN_FIELDS, read: readRun },
+}
+
+async function readWatch($: Engine, w: WatchRow) {
+  const g = GH_READ[w.kind] ?? GH_READ.pr
+  try {
+    const r = await runGh($, [...g.args, String(w.number), '--repo', w.repo, '--json', g.fields], 20_000)
+    return r.exitCode === 0 ? g.read(JSON.parse(r.stdout)) : null
+  } catch {
+    return null
+  }
+}
+
+// One look at every live watch: no faster than WATCH_EVERY_MS unless forced (adding a watch takes its baseline).
+// A change after the baseline fires the watch: a line in the event feed and a mark in the section. Never a toast.
+async function pollWatches($: Engine, force: boolean) {
+  const now = Date.now()
+  if (!force && now - ctx.watchPolledAt < WATCH_EVERY_MS) return
+  ctx.watchPolledAt = now
+  let list = (await loadWatches($)).filter(w => !isExpired(w, now))
+  for (const w of pollable(list, now)) {
+    const r = await readWatch($, w)
+    if (!r) continue
+    const next = stepWatch(w, r, now)
+    if (next.firedAt > w.firedAt) {
+      const tone = /failing|failed|conflict/.test(next.fired) ? 'bad' : /merged|passed|ready/.test(next.fired) ? 'ok' : 'info'
+      note($, { at: now, tone, text: `watch ${watchName(w)} ${w.repo}: ${next.fired}` }, false)
+    }
+    list = list.map(x => (x.id === w.id ? next : x))
+  }
+  ctx.watches = list
+  await $.store.set('watches', list).catch(() => undefined)
+}
+
 async function tick($: Engine, withPrs: boolean) {
   try {
     await tickNow($, withPrs)
@@ -739,6 +854,8 @@ async function tickNow($: Engine, withPrs: boolean) {
   if (me.state === 'running' && ctx.turnEdits.size > 0) ctx.turnFiles = await readTurnFiles($)
   await heartbeat($)
   if (withPrs) ctx.prs = await readPrs($)
+  // The list is read from the store inside, so a watch another session added is picked up too.
+  if (ctx.isOpen) await pollWatches($, false)
   if (ctx.ticks % DISK_EVERY_TICKS === 0) await readDisks($)
   await publish($, g, true)
 }
@@ -799,9 +916,14 @@ export const register: Register = on => {
     await $.command.register({ name: 'dash-summaries', description: 'Write a one-line summary per session after each turn (on | off; uses a small model call per turn)' })
     const storedSummaries = await $.store.get('summariesOn').catch(() => undefined)
     if (typeof storedSummaries === 'boolean') ctx.summariesOn = storedSummaries
+    await $.command.register({ name: 'dash-icons', description: 'Icons in the Watching boxes: emoji (any font, default) | nerd (the official GitHub mark, needs a Nerd Font) | ascii' })
+    const storedIcons = parseIconStyle(String(await $.store.get('iconStyle').catch(() => '')))
+    if (storedIcons) ctx.iconStyle = storedIcons
     await $.command.register({ name: 'dash-handoff', description: 'Write a handoff note when a session compacts (on | off, or toggle)' })
     const storedHandoff = await $.store.get('handoffOn').catch(() => undefined)
     if (typeof storedHandoff === 'boolean') ctx.handoffOn = storedHandoff
+    await $.command.register({ name: 'dash-watch', description: 'Keep an eye on a pull request: pr <number or URL> | list | clear <number|all>' })
+    ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, Date.now()))
     await $.command.register({ name: 'dash-refresh', description: 'Refresh the dashboard now, PRs included' })
     ctx.isWindows = (await $.env.get('OS')) === 'Windows_NT'
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
@@ -964,6 +1086,61 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
+
+  on('command.run', { command: 'dash-watch' }, async ($, e) => {
+    const cmd = parseWatchArgs(e.args ?? '')
+    const now = Date.now()
+    ctx.watches = (await loadWatches($)).filter(w => !isExpired(w, now))
+    if (cmd.cmd === 'help') return { text: `${cmd.reason} ${WATCH_HELP}` }
+    if (cmd.cmd === 'list') {
+      const rows = ctx.watches.map((w, i) => `${i + 1}. ${watchName(w)} ${w.repo} · ${w.detail || 'waiting for the first look'}${w.firedAt ? ` · ${w.fired}` : ''}`)
+
+      return { text: rows.length ? rows.join('\n') : `Nothing watched. ${WATCH_HELP}` }
+    }
+    if (cmd.cmd === 'clear') {
+      const r = clearWatches(ctx.watches, cmd.which)
+      ctx.watches = r.list
+      await $.store.set('watches', r.list).catch(() => undefined)
+      await publish($, undefined)
+
+      return { text: r.removed ? `Cleared ${r.removed === 1 ? 'that watch' : `${r.removed} watches`}.` : 'No watch with that number. /dash-watch list shows them.' }
+    }
+    // Add. A bare number means this session's repository, as gh knows it.
+    let spec = cmd.spec
+    if (!spec.repo) {
+      let name = ''
+      try {
+        const r = await runGh($, ['repo', 'view', '--json', 'nameWithOwner'], 15_000)
+        if (r.exitCode === 0) name = String((JSON.parse(r.stdout) as { nameWithOwner?: string }).nameWithOwner ?? '')
+      } catch {}
+      if (!name) return { text: `I could not tell which repository #${spec.number} is in. Use owner/repo#${spec.number} or the GitHub URL.` }
+      spec = { ...spec, repo: name }
+    }
+    const added = addWatch(ctx.watches, spec, now)
+    if (added.error || !added.added) return { text: added.error }
+    ctx.watches = added.list
+    await $.store.set('watches', added.list).catch(() => undefined)
+    await pollWatches($, true)
+    await publish($, undefined)
+    const w = ctx.watches.find(x => x.id === added.added?.id)
+
+    // No reading yet means gh could not answer: not on PATH for this process, not logged in, or no such item.
+    const unread = w?.detail ? '' : ` I could not read it just now: check that \`gh\` is installed, on your PATH and logged in (\`gh auth status\`), and that the ${spec.kind === 'pr' ? 'pull request' : spec.kind === 'issue' ? 'issue' : 'run'} exists. It will keep trying while the pane is open.`
+
+    return { text: `Watching ${watchName(spec)} in ${spec.repo}${w?.detail ? ` (now ${w.detail})` : ''}. It is checked about once a minute while the dashboard pane is open, and drops off after 24 hours.${unread}` }
+  })
+
+  on('command.run', { command: 'dash-icons' }, async ($, e) => {
+    const style = parseIconStyle(e.args ?? '')
+    if (!style) {
+      return { text: `Icons are ${ctx.iconStyle}. Choose one: ${ICON_STYLES.join(' | ')}. emoji works in any font; nerd draws the official GitHub mark and needs a Nerd Font set as your terminal font (nerdfonts.com), or it shows as an empty box; ascii is plain letters.` }
+    }
+    ctx.iconStyle = style
+    await $.store.set('iconStyle', style).catch(() => undefined)
+    await publish($, undefined)
+
+    return { text: `Icons: ${style}.${style === 'nerd' ? ' If the GitHub mark shows as an empty box, your terminal font is not a Nerd Font: use /dash-icons emoji.' : ''}` }
+  })
 
   on('command.run', { command: 'dash-handoff' }, async ($, e) => {
     const arg = (e.args ?? '').trim().toLowerCase()
