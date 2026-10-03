@@ -1,5 +1,14 @@
 export type SessionState = 'running' | 'idle' | 'waiting' | 'ended'
 
+/** How far a session is through the todo list it keeps with TodoWrite. */
+export type PlanProgress = { done: number; total: number; current: string }
+
+/** A URL fetched or a query searched. */
+export type SourceRow = { at: number; kind: 'fetch' | 'search'; label: string }
+
+/** A file edited this turn, with lines added and removed versus HEAD. */
+export type ChangedFile = { path: string; added: number; removed: number }
+
 export type SessionRow = {
   id: string
   name: string
@@ -26,6 +35,14 @@ export type SessionRow = {
   ctxTrend: number[]
   /** Share of input tokens read from the prompt cache on its last turn, 0-100. Plugin sessions only. */
   cacheHitPct: number | null
+  /** Its TodoWrite list progress; null when it has none. Plugin sessions only. */
+  plan?: PlanProgress | null
+  /** When the plan last changed. */
+  planAt?: number
+  /** URLs fetched and queries searched, newest first. Plugin sessions only. */
+  sources?: SourceRow[]
+  /** Files edited this turn (and not yet committed), with +/- lines. Plugin sessions only. */
+  turnFiles?: ChangedFile[]
 }
 
 export type DiskRow = { name: string; freeBytes: number; totalBytes: number }
@@ -111,7 +128,7 @@ export type Snapshot = {
   updatedAt: number
 }
 
-export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs'
+export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files'
 
 declare module 'claude-code' {
   interface PluginState {
