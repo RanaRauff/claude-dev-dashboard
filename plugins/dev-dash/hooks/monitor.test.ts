@@ -3,6 +3,11 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { AgentRow, SessionRow } from '../types'
 import {
   agentStateOf,
+  cacheHitPct,
+  isDiskLow,
+  parseDf,
+  parseWindowsDisks,
+  riskyReason,
   changesBetween,
   collisionsOf,
   crossedSteps,
@@ -34,6 +39,9 @@ const session = (over: Partial<SessionRow>): SessionRow => ({
   updatedAt: NOW,
   stuck: '',
   editing: [],
+  risky: '',
+  ctxTrend: [],
+  cacheHitPct: null,
   ...over,
 })
 
@@ -150,9 +158,71 @@ describe('events', () => {
     )
     expect(changes.map(c => [c.text, c.isAlert])).toEqual([
       ['Login work needs input needed', true],
-      ['Docs finished', false],
+      ['Docs finished after 5m', true],
       ['agent finished: Research ideas', true],
       ['#42 CI went red', true],
     ])
+  })
+})
+
+describe('risky commands', () => {
+  test('flags destructive commands', () => {
+    expect(riskyReason('rm -rf build/')).toBe('rm -rf')
+    expect(riskyReason('rm -fr ~/tmp')).toBe('rm -rf')
+    expect(riskyReason('git push origin main --force')).toBe('git push --force')
+    expect(riskyReason('git push -f')).toBe('git push --force')
+    expect(riskyReason('git reset --hard HEAD~3')).toBe('git reset --hard')
+    expect(riskyReason('git clean -fdx')).toBe('git clean -f')
+    expect(riskyReason('Remove-Item .\dist -Recurse -Force')).toBe('Remove-Item -Recurse -Force')
+    expect(riskyReason('psql -c "DROP TABLE users"')).toBe('DROP')
+  })
+
+  test('leaves safe commands alone', () => {
+    expect(riskyReason('rm build/out.js')).toBe('')
+    expect(riskyReason('git push --force-with-lease')).toBe('')
+    expect(riskyReason('git reset --soft HEAD~1')).toBe('')
+    expect(riskyReason('npm test')).toBe('')
+  })
+})
+
+describe('cache and disks', () => {
+  test('cache hit rate', () => {
+    expect(cacheHitPct({ input_tokens: 100, cache_read_input_tokens: 800, cache_creation_input_tokens: 100 })).toBe(80)
+    expect(cacheHitPct({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })).toBeNull()
+    expect(cacheHitPct(undefined)).toBeNull()
+  })
+
+  test('Windows drives from Get-PSDrive', () => {
+    const disks = parseWindowsDisks('C 53687091200 446676598784\r\nD  \r\nE 1073741824 0\r\n')
+    expect(disks).toEqual([
+      { name: 'C:', freeBytes: 53687091200, totalBytes: 500363689984 },
+      { name: 'E:', freeBytes: 1073741824, totalBytes: 1073741824 },
+    ])
+  })
+
+  test('df -Pk keeps real filesystems', () => {
+    const out = [
+      'Filesystem 1024-blocks Used Available Capacity Mounted on',
+      '/dev/disk3s1 488245288 400000000 20000000 96% /',
+      'devfs 200 200 0 100% /dev',
+    ].join('\n')
+    expect(parseDf(out)).toEqual([{ name: '/', freeBytes: 20000000 * 1024, totalBytes: 488245288 * 1024 }])
+  })
+
+  test('low means under 10% or under 5 GB free', () => {
+    expect(isDiskLow({ name: 'C:', freeBytes: 4 * 1024 ** 3, totalBytes: 20 * 1024 ** 3 })).toBe(true)
+    expect(isDiskLow({ name: 'C:', freeBytes: 40 * 1024 ** 3, totalBytes: 500 * 1024 ** 3 })).toBe(true)
+    expect(isDiskLow({ name: 'C:', freeBytes: 100 * 1024 ** 3, totalBytes: 500 * 1024 ** 3 })).toBe(false)
+  })
+})
+
+describe('risky events', () => {
+  test('a newly risky session alerts once', () => {
+    const before = remember([session({ id: 'a', name: 'Cleanup', state: 'running' })], [], null)
+    const after = [session({ id: 'a', name: 'Cleanup', state: 'running', risky: 'git push --force' })]
+    expect(changesBetween(before, after, [], null, 'self', NOW, false).map(c => [c.text, c.isAlert])).toEqual([
+      ['Cleanup ran a risky command: git push --force', true],
+    ])
+    expect(changesBetween(remember(after, [], null), after, [], null, 'self', NOW, false)).toEqual([])
   })
 })

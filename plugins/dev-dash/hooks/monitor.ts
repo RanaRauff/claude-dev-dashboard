@@ -186,7 +186,7 @@ export const parseShortstat = (s: string) => ({
 // Events: what changed between two snapshots
 // ---------------------------------------------------------------------------
 export type Seen = {
-  sessions: Map<string, { state: SessionState; since: number; stuck: string }>
+  sessions: Map<string, { state: SessionState; since: number; stuck: string; risky: string }>
   agents: Map<string, AgentRow['state']>
   ci: Map<number, CiState>
 }
@@ -218,7 +218,11 @@ export const changesBetween = (
         out.push({ at: now, tone: 'warn', text: `${name(r)} needs ${r.waitingFor || 'you'}`, isAlert: true })
       }
       if (r.state === 'idle' && was.state === 'running' && now - was.since > 60_000 && r.id !== selfId) {
-        out.push({ at: now, tone: 'ok', text: `${name(r)} finished`, isAlert: false })
+        const isLong = now - was.since >= LONG_TASK_MS
+        out.push({ at: now, tone: 'ok', text: `${name(r)} finished${isLong ? ` after ${Math.round((now - was.since) / 60_000)}m` : ''}`, isAlert: isLong })
+      }
+      if (r.risky && r.risky !== was.risky) {
+        out.push({ at: now, tone: 'bad', text: `${name(r)} ran a risky command: ${r.risky}`, isAlert: true })
       }
       if (r.stuck && r.stuck !== was.stuck) {
         out.push({ at: now, tone: 'bad', text: `${name(r)} may be stuck: ${r.stuck}`, isAlert: true })
@@ -250,7 +254,7 @@ export const changesBetween = (
 }
 
 export const remember = (sessions: readonly SessionRow[], agents: readonly AgentRow[], mine: readonly PrRow[] | null): Seen => ({
-  sessions: new Map(sessions.map(r => [r.id, { state: r.state, since: r.stateSince, stuck: r.stuck }] as const)),
+  sessions: new Map(sessions.map(r => [r.id, { state: r.state, since: r.stateSince, stuck: r.stuck, risky: r.risky }] as const)),
   agents: new Map(agents.map(a => [a.id, a.state] as const)),
   ci: new Map((mine ?? []).map(p => [p.number, p.ci] as const)),
 })
@@ -259,3 +263,84 @@ export const remember = (sessions: readonly SessionRow[], agents: readonly Agent
 export const CONTEXT_STEPS = [50, 75, 90] as const
 export const crossedSteps = (last: number | null, now: number | null) =>
   last === null || now === null ? [] : CONTEXT_STEPS.filter(step => last < step && now >= step)
+
+// ---------------------------------------------------------------------------
+// Risky shell commands (flagged, never blocked)
+// ---------------------------------------------------------------------------
+const RISKY: ReadonlyArray<[RegExp, string]> = [
+  [/\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive\s+--force|--force\s+--recursive)\b/i, 'rm -rf'],
+  [/\bgit\s+push\b[^\n;&|]*\s(--force(?!-with-lease)|-f\b)/i, 'git push --force'],
+  [/\bgit\s+reset\s+--hard\b/i, 'git reset --hard'],
+  [/\bgit\s+clean\s+-[a-z]*f/i, 'git clean -f'],
+  [/\bgit\s+(checkout|restore)\s+(--\s+)?\.(\s|$)/i, 'discard all changes'],
+  [/\bgit\s+branch\s+-D\b/, 'git branch -D'],
+  [/\bdrop\s+(database|table|schema)\b/i, 'DROP'],
+  [/\btruncate\s+table\b/i, 'TRUNCATE'],
+  [/\bRemove-Item\b[^\n]*-Recurse[^\n]*-Force|\bRemove-Item\b[^\n]*-Force[^\n]*-Recurse/i, 'Remove-Item -Recurse -Force'],
+  [/\b(del|erase)\s+(\/[a-z]\s+)*\/s\b/i, 'del /s'],
+  [/\brd\s+\/s\b|\brmdir\s+\/s\b/i, 'rmdir /s'],
+  [/\bmkfs(\.\w+)?\b|\bformat\s+[a-z]:/i, 'format disk'],
+  [/\bdd\s+if=.*\bof=\/dev\//i, 'dd to a device'],
+  [/\bchmod\s+-R\s+777\b/i, 'chmod -R 777'],
+  [/\b(kubectl|terraform)\s+(delete|destroy)\b/i, 'infra delete'],
+]
+
+/** The risky pattern a shell command matches, or ''. */
+export const riskyReason = (command: string): string => RISKY.find(([re]) => re.test(command))?.[1] ?? ''
+
+// ---------------------------------------------------------------------------
+// Prompt cache
+// ---------------------------------------------------------------------------
+export type TokenUsage = {
+  input_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+}
+
+/** Share of input tokens served from cache, 0-100, or null with no input. */
+export const cacheHitPct = (u: TokenUsage | undefined | null): number | null => {
+  if (!u) return null
+  const total = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+  return total > 0 ? Math.round((u.cache_read_input_tokens / total) * 100) : null
+}
+
+// ---------------------------------------------------------------------------
+// Disk space
+// ---------------------------------------------------------------------------
+export type Disk = { name: string; freeBytes: number; totalBytes: number }
+
+/** PowerShell `Get-PSDrive` lines: "<Name> <Free> <Used>". */
+export const parseWindowsDisks = (out: string): Disk[] =>
+  out
+    .split(/\r?\n/)
+    .map(l => l.trim().split(/\s+/))
+    .filter(p => p.length === 3 && /^\d+$/.test(p[1]) && /^\d+$/.test(p[2]))
+    .map(([name, free, used]) => ({ name: `${name}:`, freeBytes: Number(free), totalBytes: Number(free) + Number(used) }))
+    .filter(d => d.totalBytes > 0)
+
+/** `df -Pk` output: real filesystems only, by mount point. */
+export const parseDf = (out: string): Disk[] =>
+  out
+    .split(/\r?\n/)
+    .slice(1)
+    .map(l => l.trim().split(/\s+/))
+    .filter(p => p.length >= 6 && p[0].startsWith('/dev/') && /^\d+$/.test(p[1]))
+    .map(p => ({ name: p.slice(5).join(' '), freeBytes: Number(p[3]) * 1024, totalBytes: Number(p[1]) * 1024 }))
+
+export const LOW_DISK_PCT = 10
+export const LOW_DISK_BYTES = 5 * 1024 ** 3
+export const isDiskLow = (d: Disk) => d.freeBytes < LOW_DISK_BYTES || (d.freeBytes / d.totalBytes) * 100 < LOW_DISK_PCT
+
+export const bytes = (n: number) => {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+/** A task counts as long, worth a ping when it ends, after this long running. */
+export const LONG_TASK_MS = 5 * 60_000

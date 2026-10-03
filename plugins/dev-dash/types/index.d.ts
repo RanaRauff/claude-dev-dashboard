@@ -20,7 +20,15 @@ export type SessionRow = {
   stuck: string
   /** Files the session edited in the last 30 minutes, absolute and normalised. Plugin sessions only. */
   editing: string[]
+  /** The risky shell command it ran in the last 10 minutes ('' when none). Plugin sessions only. */
+  risky: string
+  /** Context % at the end of each of its last 12 turns, oldest first. Plugin sessions only. */
+  ctxTrend: number[]
+  /** Share of input tokens read from the prompt cache on its last turn, 0-100. Plugin sessions only. */
+  cacheHitPct: number | null
 }
+
+export type DiskRow = { name: string; freeBytes: number; totalBytes: number }
 
 export type AgentState = 'working' | 'quiet' | 'done' | 'stopped'
 
@@ -93,6 +101,11 @@ export type Snapshot = {
   limits: LimitRow[]
   events: EventRow[]
   alertsOn: boolean
+  /** Whether the one-line band above the prompt is on. */
+  bandOn: boolean
+  /** Whether this session's dashboard pane is open (the band steps aside). */
+  paneOpen: boolean
+  disks: DiskRow[]
   git: GitInfo | null
   prs: PrInfo | null
   updatedAt: number
@@ -106,6 +119,8 @@ declare module 'claude-code' {
       snap: Snapshot | null
       collapsed: DashSection[]
       activity: number[]
+      /** Whether the pane is open; kept by the host so a reload of the mod doesn't forget it. */
+      paneOpen: boolean
     }
   }
 }
