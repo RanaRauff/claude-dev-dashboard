@@ -21,6 +21,8 @@ export type WatchView = {
   iconStyle?: IconStyle
   W: number
   now: number
+  /** The card border the theme draws with. */
+  border?: string
   tone: { ok: string; warn: string; bad: string; info: string; mute: string }
   fmt: { ago: (ms: number) => string; cut: (s: string, n: number) => string }
 }
@@ -46,7 +48,7 @@ export function watchingSection(v: WatchView) {
     const border = isFired ? tone.warn : toneColor(w.tone, tone)
     const chips: WatchChip[] = w.chips ?? []
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={border} paddingX={1} width={bw}>
+      <Box flexDirection="column" borderStyle={(v.border ?? 'round') as 'round'} borderColor={border} paddingX={1} width={bw}>
         <Box flexDirection="row">
           <Text bold>{iconFor(sourceOf(w.kind), iconStyle)} </Text>
           <Text bold>{watchName(w)}</Text>

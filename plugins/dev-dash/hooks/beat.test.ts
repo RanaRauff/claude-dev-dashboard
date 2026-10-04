@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { claudeBeat, drawLine, effortOf, MIN_SCALE, scaleLevels } from './beat'
+import { claudeBeat, drawLine, effortOf, MIN_SCALE, scaleLevels, tipRow } from './beat'
 
 describe('claude beat: effort', () => {
   test('running sessions count most, then busy agents, then waiting, plus tool calls', () => {
@@ -83,5 +83,14 @@ describe('claude beat: the line as solid characters', () => {
     expect(claudeBeat([1], 0)[0].length).toBe(1)
     expect(claudeBeat([1], 3, 0).length).toBe(1)
     expect(claudeBeat([1], 3, 0)[0].length).toBe(3)
+  })
+})
+
+describe('claude beat: the blinking tip', () => {
+  test('it is on the row of the newest sample only, however steep the last step', () => {
+    expect(tipRow([0, 0, 0], 3, 5)).toBe(4)
+    expect(tipRow([0, 0, 12], 3, 5)).toBe(0)
+    expect(tipRow([12, 12, 0], 3, 5)).toBe(4)
+    expect(tipRow([], 4, 5)).toBe(4)
   })
 })

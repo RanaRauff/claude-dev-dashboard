@@ -196,6 +196,10 @@ export type Snapshot = {
   nowPlaying: NowPlaying | null
   /** Whether the person has turned the Spotify card on (off by default; nothing is read while it is off). */
   spotifyOn: boolean
+  /** Whether the other cards fold to one line while something urgently needs you (the Flight Deck focus). On by default. */
+  focusOn: boolean
+  /** The colour theme (/dash-theme). `auto` follows the terminal's own colours. */
+  theme: ThemeId
   git: GitInfo | null
   prs: PrInfo | null
   /** What /dash-watch is keeping an eye on; the Watching section is hidden when empty. */
@@ -205,6 +209,8 @@ export type Snapshot = {
   updatedAt: number
 }
 
+export type ThemeId = 'auto' | 'claude' | 'nord' | 'neon' | 'crt' | 'light' | 'mono' | 'hacker'
+
 export type DashSection = 'attention' | 'sessions' | 'agents' | 'monitor' | 'work' | 'prs' | 'plan' | 'sources' | 'files' | 'watching'
 
 declare module 'claude-code' {
@@ -212,6 +218,10 @@ declare module 'claude-code' {
     'dev-dash': {
       snap: Snapshot | null
       collapsed: DashSection[]
+      /** Flips every second while the pane is open: the claude beat's tip blinks with it. */
+      blink: boolean
+      /** Sections the person opened while the focus fold is on. */
+      expanded: DashSection[]
       activity: number[]
       /** Whether the pane is open; kept by the host so a reload of the mod doesn't forget it. */
       paneOpen: boolean

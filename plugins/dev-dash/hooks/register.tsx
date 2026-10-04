@@ -22,6 +22,7 @@ import type {
   IconStyle,
   WatchKind,
   WatchRow,
+  ThemeId,
   WorktreeRow,
 } from '../types'
 import {
@@ -58,6 +59,7 @@ import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
 import { pushActivity, registerDashPane } from './render'
+import { THEMES, isTheme, nextTheme, themeByName } from './themes'
 import type { Reading } from './watch'
 import {
   addWatch,
@@ -88,6 +90,7 @@ const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
 const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
 const tab = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashboard')
 const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
+const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, false)
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
@@ -184,6 +187,8 @@ const ctx = {
   nowPlaying: null as NowPlaying | null,
   nowPlayingAt: 0,
   spotifyOn: false,
+  focusOn: true,
+  theme: 'auto' as ThemeId,
   plan: null as PlanProgress | null,
   planAt: 0,
   sources: [] as SourceRow[],
@@ -736,6 +741,8 @@ async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample
       disks: ctx.disks,
       nowPlaying: ctx.nowPlaying,
       spotifyOn: ctx.spotifyOn,
+      focusOn: ctx.focusOn,
+      theme: ctx.theme,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       watches: ctx.watches,
@@ -921,6 +928,32 @@ async function setSpotify($: Engine, arg: string) {
     : 'Spotify is off. Nothing is read.'
 }
 
+// /dash-theme: no argument or `next` cycles, `list` names them, a name picks one. The footer button cycles.
+async function setTheme($: Engine, arg: string) {
+  const a = arg.trim().toLowerCase()
+  if (a === 'list') return `Themes: ${THEMES.map(t => `${t.id} (${t.blurb})`).join(' · ')}. Now: ${ctx.theme}.`
+  const picked = a && a !== 'next' ? themeByName(a) : undefined
+  if (a && a !== 'next' && !picked) return `No theme called "${arg.trim()}". Try /dash-theme list.`
+  ctx.theme = picked ? picked.id : nextTheme(ctx.theme)
+  await $.store.set('theme', ctx.theme).catch(() => undefined)
+  await publish($, undefined)
+  const t = themeByName(ctx.theme)
+
+  return `Theme: ${t?.label ?? ctx.theme}. ${t?.blurb ?? ''}${ctx.theme === 'auto' ? '' : ' (The exact colours want a truecolor terminal.)'}`
+}
+
+// The focus fold is on by default: while something urgently needs you, the other cards fold to one line each.
+async function setFocus($: Engine, arg: string) {
+  const a = arg.trim().toLowerCase()
+  ctx.focusOn = a === 'on' ? true : a === 'off' ? false : !ctx.focusOn
+  await $.store.set('focusOn', ctx.focusOn).catch(() => undefined)
+  await publish($, undefined)
+
+  return ctx.focusOn
+    ? 'Focus is on: while something needs you, the other cards fold to one line each. Open one with its arrow.'
+    : 'Focus is off: every card stays as you left it.'
+}
+
 async function setAlerts($: Engine, arg: string) {
   const a = arg.trim().toLowerCase()
   ctx.alertsOn = a === 'on' ? true : a === 'off' ? false : !ctx.alertsOn
@@ -972,6 +1005,12 @@ export const register: Register = on => {
     if (typeof stored === 'boolean') ctx.alertsOn = stored
     const storedBand = await $.store.get('bandOn').catch(() => undefined)
     if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    await $.command.register({ name: 'dash-theme', description: 'Colour theme: auto (default) | claude | nord | neon | crt | light | mono, or no name to cycle; list shows them' })
+    const storedTheme = await $.store.get('theme').catch(() => undefined)
+    if (isTheme(storedTheme)) ctx.theme = storedTheme
+    await $.command.register({ name: 'dash-focus', description: 'Fold the other cards to one line while something needs you (on | off, or toggle; on by default)' })
+    const storedFocus = await $.store.get('focusOn').catch(() => undefined)
+    if (typeof storedFocus === 'boolean') ctx.focusOn = storedFocus
     await $.command.register({ name: 'dash-spotify', description: 'Show what Spotify is playing on the Entertainment tab (on | off, or toggle; off by default)' })
     const storedSpotify = await $.store.get('spotifyOn').catch(() => undefined)
     if (typeof storedSpotify === 'boolean') ctx.spotifyOn = storedSpotify
@@ -996,6 +1035,10 @@ export const register: Register = on => {
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
     ctx.isOpen = (await read($, paneOpen)) === true
     await tick($, ctx.isOpen)
+    // The claude beat's tip blinks once a second while the pane is open. Only an atom flips: no data is collected.
+    $.clock.every(1000, async () => {
+      if (ctx.isOpen) await update($, blink, v => !v)
+    })
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1
       await tick($, ctx.isOpen && (ctx.prs === null || ctx.ticks % PR_EVERY_TICKS === 0))
@@ -1128,6 +1171,11 @@ export const register: Register = on => {
 
     return { element: e.element }
   })
+  on('ui.press', { plugin: 'dev-dash', element: 'key-theme' }, async ($, e) => {
+    await setTheme($, '')
+
+    return { element: e.element }
+  })
   on('ui.press', { plugin: 'dev-dash', element: 'key-alerts' }, async ($, e) => {
     await setAlerts($, '')
 
@@ -1159,6 +1207,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
+  on('command.run', { command: 'dash-theme' }, async ($, e) => ({ text: await setTheme($, e.args ?? '') }))
+  on('command.run', { command: 'dash-focus' }, async ($, e) => ({ text: await setFocus($, e.args ?? '') }))
   on('command.run', { command: 'dash-spotify' }, async ($, e) => ({ text: await setSpotify($, e.args ?? '') }))
 
   on('command.run', { command: 'dash-watch' }, async ($, e) => {

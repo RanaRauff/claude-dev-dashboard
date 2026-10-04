@@ -15,11 +15,13 @@ import type { On } from 'claude-code'
 
 import type { AgentRow, AgentState, CiState, DashSection, DiskRow, EventRow, LimitRow, PrRow, SessionRow, SessionState, Snapshot } from '../types'
 import { attentionOf, isLimitAtRisk, itemsOf } from './attention'
-import { claudeBeat, effortOf } from './beat'
+import { claudeBeat, effortOf, lane, tipRow } from './beat'
 import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './keys'
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { TABS, isTab } from './entertainment'
+import { applyLook, applyTheme, themeByName } from './themes'
+import type { Look, Roles } from './themes'
 import { progressSections } from './progress-view'
 import { customView, entertainmentView } from './tabs-view'
 import { testBadge } from './testrun'
@@ -29,6 +31,8 @@ export const PANE = 'dev-dash'
 
 export const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 export const collapsed = atom({ plugin: 'dev-dash', key: 'collapsed' } as const, [])
+export const expanded = atom({ plugin: 'dev-dash', key: 'expanded' } as const, [])
+export const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, false)
 export const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 export const openRow = atom({ plugin: 'dev-dash', key: 'openRow' } as const, '')
 export const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
@@ -41,16 +45,26 @@ export const tabState = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashb
 // (dark or light) remaps to readable values. No hex: a fixed hex that reads on
 // black can vanish on white. Swap the right-hand side to retheme.
 // ---------------------------------------------------------------------------
-export const TONE = {
+// A live table: applyTheme (themes.ts) points it at the chosen theme at the start of each render, so every colour
+// below is read when it is drawn. `you` is the colour of "this needs you".
+export const LOOK: Look = { border: 'round', caps: false }
+export const TONE: Roles = {
+  you: 'yellow',
   ok: 'green',
   warn: 'yellow',
   bad: 'red',
   info: 'cyan',
   accent: 'magenta',
   mute: 'gray',
-} as const
+}
 
-const STATE_TONE: Record<SessionState, string> = { running: TONE.ok, waiting: TONE.warn, idle: TONE.mute, ended: TONE.mute }
+// Read through getters: the theme can change between renders.
+const STATE_TONE = {
+  get running() { return TONE.ok },
+  get waiting() { return TONE.you },
+  get idle() { return TONE.mute },
+  get ended() { return TONE.mute },
+} as Record<SessionState, string>
 const STATE_BADGE: Record<SessionState, string> = { running: ' RUN  ', waiting: ' WAIT ', idle: ' IDLE ', ended: ' END  ' }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +138,7 @@ export const layoutFor = (cols: number | undefined) => {
 
 const where = (r: SessionRow) => (r.branch ? `${r.repo}@${r.branch}` : r.repo)
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+const FOCUS_FOLD: DashSection[] = ['sessions', 'agents', 'monitor', 'work', 'prs']
 const toggle = (list: readonly DashSection[] | undefined, id: DashSection) =>
   (list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]
 
@@ -140,17 +155,22 @@ export const limitNote = (l: LimitRow, now: number) => {
 }
 
 const AGENT_LOOK: Record<AgentState, { glyph: string; tone: string; word: string }> = {
-  working: { glyph: '◐', tone: TONE.ok, word: 'working' },
-  quiet: { glyph: '◌', tone: TONE.warn, word: 'quiet' },
-  done: { glyph: '✓', tone: TONE.mute, word: 'done' },
-  stopped: { glyph: '■', tone: TONE.mute, word: 'stopped' },
+  working: { glyph: '◐', get tone() { return TONE.ok }, word: 'working' },
+  quiet: { glyph: '◌', get tone() { return TONE.warn }, word: 'quiet' },
+  done: { glyph: '✓', get tone() { return TONE.mute }, word: 'done' },
+  stopped: { glyph: '■', get tone() { return TONE.mute }, word: 'stopped' },
 }
 
 /** A spinner frame for working agents, advancing every sync. */
 const SPIN = '◐◓◑◒'
 export const spinFrame = (at: number) => SPIN[Math.floor(at / 5000) % SPIN.length]
 
-const EVENT_TONE: Record<EventRow['tone'], string> = { ok: TONE.ok, warn: TONE.warn, bad: TONE.bad, info: TONE.info }
+const EVENT_TONE = {
+  get ok() { return TONE.ok },
+  get warn() { return TONE.warn },
+  get bad() { return TONE.bad },
+  get info() { return TONE.info },
+} as Record<EventRow['tone'], string>
 const EVENT_GLYPH: Record<EventRow['tone'], string> = { ok: '✓', warn: '◆', bad: '✗', info: '·' }
 
 export const clockOf = (at: number) => {
@@ -159,10 +179,10 @@ export const clockOf = (at: number) => {
 }
 
 const CI: Record<CiState, { glyph: string; tone: string; inverse: boolean }> = {
-  failing: { glyph: ' ✗ CI ', tone: TONE.bad, inverse: true },
-  pending: { glyph: '◌ CI', tone: TONE.warn, inverse: false },
-  passing: { glyph: '✓ CI', tone: TONE.ok, inverse: false },
-  none: { glyph: '· no CI', tone: TONE.mute, inverse: false },
+  failing: { glyph: ' ✗ CI ', get tone() { return TONE.bad }, inverse: true },
+  pending: { glyph: '◌ CI', get tone() { return TONE.warn }, inverse: false },
+  passing: { glyph: '✓ CI', get tone() { return TONE.ok }, inverse: false },
+  none: { glyph: '· no CI', get tone() { return TONE.mute }, inverse: false },
 }
 
 const reviewChip = (p: PrRow): { text: string; tone: string } => {
@@ -179,7 +199,11 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const s = await read($, snap)
+    applyTheme(TONE, s?.theme)
+    applyLook(LOOK, s?.theme)
     const folded = (await read($, collapsed)) ?? []
+    const opened2 = (await read($, expanded)) ?? []
+    const isPulse = (await read($, blink)) === true
     const samples = (await read($, activity)) ?? []
     const L = layoutFor(e.props.bodyColumns ?? (e.viewport ? e.viewport.columns - 2 : undefined))
     const { W, isNarrow } = L
@@ -196,7 +220,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
 
     // A card: the Flight Deck look. A rounded border in the section's colour; the heading is its first line.
     const Frame = (p: { tone?: string; children?: unknown }) => (
-      <Box borderStyle="round" borderColor={p.tone ?? TONE.mute} paddingX={1} flexDirection="column" width={W}>
+      <Box borderStyle={LOOK.border} borderColor={p.tone ?? TONE.mute} paddingX={1} flexDirection="column" width={W}>
         {p.children}
       </Box>
     )
@@ -204,7 +228,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     // A section heading: `▾ Title            meta`, and folded `▸ Title            summary`.
     // The plain Button with a hotkey is the fold control (pressable while the pane holds the keys).
     const Heading = (p: { id: DashSection; hotkey: string; title: string; tone?: string; summary: string }) => {
-      const isOpen = !folded.includes(p.id)
+      const isOpen = !shut.includes(p.id)
       return (
         <Box flexDirection="row">
           <Button
@@ -212,9 +236,9 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             plain
             hotkey={p.hotkey}
             label={isOpen ? '▾' : '▸'}
-            onPress={() => update($, collapsed, list => toggle(list, p.id))}
+            onPress={() => (isFocus && FOCUS_FOLD.includes(p.id) ? update($, expanded, list => toggle(list, p.id)) : update($, collapsed, list => toggle(list, p.id)))}
           />
-          <Text bold color={p.tone}> {p.title} </Text>
+          <Text bold color={p.tone}> {LOOK.caps ? p.title.toUpperCase() : p.title} </Text>
           <Box flexGrow={1} />
           <Text dimColor wrap="truncate-end">{cut(p.summary, Math.max(8, W - p.title.length - 12))}</Text>
         </Box>
@@ -282,30 +306,39 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     }
 
     const att = attentionOf(s, muting)
+    // Flight Deck focus: while something urgent needs you, the five big cards fold to one line each (open one with its
+    // arrow). `shut` is what is folded right now: the focus fold for those five, the person's own folds for the rest.
+    const isFocus = s.focusOn !== false && att.urgent > 0
+    const shut: DashSection[] = [
+      ...folded.filter(id => !(isFocus && FOCUS_FOLD.includes(id))),
+      ...(isFocus ? FOCUS_FOLD.filter(id => !opened2.includes(id)) : []),
+    ]
     const caps = { reviews: isNarrow ? 3 : 5, sessions: L.sessionRows, agents: isNarrow ? 4 : 8 }
-    const items = itemsOf(s, att, folded, caps)
+    const items = itemsOf(s, att, shut, caps)
     const g = s.git
     const costs = s.sessions.map(r => r.costUsd).filter((c): c is number => c !== null)
     const cost = costs.length ? costs.reduce((a, b) => a + b, 0) : null
     const live = s.sessions.filter(r => r.state === 'running').length
-    const headTone = att.urgent > 0 ? TONE.warn : att.total > 0 ? TONE.info : TONE.ok
+    const headTone = att.urgent > 0 ? TONE.you : att.total > 0 ? TONE.info : TONE.ok
     const agents = s.agents ?? []
     const busyAgents = agents.filter(a => a.state === 'working' || a.state === 'quiet')
     const limits = s.limits ?? []
     // "claude beat": a line graph of how much effort Claude put in at each sync, flat along the bottom when idle.
     const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 4 : 5)
+    const tipAt = tipRow(samples, L.sparkCells, isNarrow ? 4 : 5)
 
     // ---- header card ------------------------------------------------------
     const header = (
-      <Box borderStyle="round" borderColor={headTone} paddingX={1} flexDirection="column" width={W}>
+      <Box borderStyle={LOOK.border} borderColor={headTone} paddingX={1} flexDirection="column" width={W}>
         <Box flexDirection="row" justifyContent="center">
           <Text bold>DEV-DASH</Text>
         </Box>
         <Box flexDirection="row" justifyContent="center" columnGap={1}>
-          <Text color={TONE.warn}>■ you</Text>
+          <Text color={TONE.you}>■ you</Text>
           <Text color={TONE.info}>■ sessions</Text>
           <Text color={TONE.accent}>■ agents</Text>
           <Text color={TONE.ok}>■ limits</Text>
+          <Text color={TONE.warn}>■ PRs</Text>
         </Box>
         <Box flexDirection="row" flexWrap="wrap">
           <Text bold color={headTone}>{att.total > 0 ? `◆ ${att.total} need${att.total === 1 ? 's' : ''} you` : '✓ all clear'}</Text>
@@ -327,13 +360,21 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         )}
         <Box flexDirection="row" columnGap={1}>
           <Box flexDirection="column">
-            <Text bold color="red">♥ claude beat</Text>
+            <Text bold color={TONE.bad}>♥ claude beat</Text>
             <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
           </Box>
           <Box flexDirection="column">
-            {beat.map(row => (
-              <Text bold color="red">{row}</Text>
-            ))}
+            {beat.map((row, at) => {
+              // The tip of the line (its newest sample) blinks, so a quiet pane still shows that it is alive.
+              const tip = row.slice(-1)
+              const isTip = at === tipAt && tip !== ' ' && row.length > 1
+              return (
+                <Text bold color={TONE.bad}>
+                  {isTip ? row.slice(0, -1) : row}
+                  {isTip ? <Text bold={isPulse} dimColor={!isPulse} color={TONE.bad}>{isPulse ? '●' : '○'}</Text> : null}
+                </Text>
+              )
+            })}
           </Box>
         </Box>
       </Box>
@@ -342,7 +383,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     // ---- Focus: the one thing that needs you grows into a card; the rest wait in a short queue -------------------
     type Need = { id: string; tone: string; glyph: string; name: string; verb: string; say: string; age: string; row?: SessionRow }
     const needs: Need[] = [
-      ...att.waiting.map(r => ({ id: ids.wait(r), tone: TONE.warn, glyph: '◆', name: r.name || where(r), verb: 'waiting on you', say: r.waitingFor || 'waiting', age: ago(now - r.stateSince), row: r })),
+      ...att.waiting.map(r => ({ id: ids.wait(r), tone: TONE.you, glyph: '◆', name: r.name || where(r), verb: 'waiting on you', say: r.waitingFor || 'waiting', age: ago(now - r.stateSince), row: r })),
       ...att.stuck.map(r => ({ id: ids.stuck(r), tone: TONE.bad, glyph: '⟳', name: r.name || where(r), verb: 'may be stuck', say: String(r.stuck), age: ago(now - r.stateSince), row: r })),
       ...att.risky.map(r => ({ id: ids.risky(r), tone: TONE.bad, glyph: '⚡', name: r.name || where(r), verb: 'ran something risky', say: String(r.risky), age: ago(now - r.stateSince), row: r })),
       ...att.disks.map(d => ({ id: ids.disk(d), tone: TONE.bad, glyph: '▼', name: `disk ${d.name}`, verb: 'is low', say: `${bytes(d.freeBytes)} free of ${bytes(d.totalBytes)}`, age: '' })),
@@ -557,7 +598,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           title={`Sessions (${s.sessions.length})`}
           summary={`${live} running · ${att.waiting.length} waiting${cost !== null ? ` · ${money(cost)}` : ''}`}
         />
-        {!folded.includes('sessions') && (
+        {!shut.includes('sessions') && (
           <Box flexDirection="column">
             {s.sessions.length === 0 && <Text dimColor>No live Claude sessions.</Text>}
             {s.sessions.length > 0 && !s.summariesOn && !s.sessions.some(r => r.summary) && (
@@ -571,6 +612,9 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     )
 
     // ---- Agents -------------------------------------------------------------------
+    // One time axis for every agent shown, so the swimlanes line up: from the earliest start to now.
+    const laneFrom = Math.min(now, ...agents.slice(0, caps.agents).map(a => a.startedAt))
+    const laneCells = isNarrow ? 6 : 12
     const agentRow = (a: AgentRow) => {
       const look = AGENT_LOOK[a.state]
       const isLive = a.state === 'working'
@@ -585,7 +629,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             </Text>
             <Text dimColor> · {look.word} {age}</Text>
           </Box>
-          <Box paddingLeft={2}>
+          <Box paddingLeft={2} flexDirection="row">
+            <Text color={look.tone}>{lane(a.startedAt, isLive || a.state === 'quiet' ? now : a.lastActive, laneFrom, now, laneCells)} </Text>
             <Text dimColor wrap="truncate-end">
               {[a.type, a.sessionName, a.steps ? plural(a.steps, 'step') : ''].filter(Boolean).join(' · ')}
             </Text>
@@ -609,7 +654,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           tone={busyAgents.length > 0 ? TONE.accent : undefined}
           summary={`${busyAgents.length} working · ${agents.length - busyAgents.length} recent`}
         />
-        {!folded.includes('agents') && (
+        {!shut.includes('agents') && (
           <Box flexDirection="column">
             {agents.length === 0 && <Text dimColor>No subagents in the last 30 minutes.</Text>}
             {agents.slice(0, agentRows).map(agentRow)}
@@ -637,7 +682,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
             .filter(Boolean)
             .join(' · ')}
         />
-        {!folded.includes('monitor') && (
+        {!shut.includes('monitor') && (
           <Box flexDirection="column">
             <Text dimColor>usage limits</Text>
             {limits.length === 0 && (
@@ -711,7 +756,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
           title="Work in flight"
           summary={g ? `${g.branch} · ${g.dirty} dirty${merged.length ? ` · ${merged.length} merged` : ''}` : 'no repo'}
         />
-        {!folded.includes('work') && (
+        {!shut.includes('work') && (
           <Box flexDirection="column">
             {!g && <Text dimColor>Not a git repository.</Text>}
             {g && (
@@ -788,7 +833,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     const prSection = (
       <Frame tone={TONE.warn}>
         <Heading id="prs" hotkey="6" title="PRs & CI" summary={prSummary} />
-        {!folded.includes('prs') && (
+        {!shut.includes('prs') && (
           <Box flexDirection="column">
             {!prs && <Text dimColor>loading…</Text>}
             {prs?.error && <Text color={TONE.warn} wrap="wrap">! {prs.error}</Text>}
@@ -825,6 +870,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       W,
       now,
       tone: TONE,
+      border: LOOK.border,
       fmt: { ago, cut },
     })
     const progress = progressSections({
@@ -843,7 +889,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
 
     // ---- footer: the buttons for the whole pane, reached with the arrows like everything else ----------
     const helpPanel = isHelpOn && (
-      <Box borderStyle="round" borderColor={TONE.info} paddingX={1} flexDirection="column" width={W} marginTop={1}>
+      <Box borderStyle={LOOK.border} borderColor={TONE.info} paddingX={1} flexDirection="column" width={W} marginTop={1}>
         <Text bold>Keys</Text>
         {HELP_KEYS.map(([key, what]) => (
           <Text wrap="truncate-end">
@@ -861,6 +907,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
           <Button key="key-refresh" label="refresh" onPress={() => undefined} />
           <Button key="key-alerts" label={s.alertsOn ? 'alerts: on' : 'alerts: off'} onPress={() => undefined} />
+          <Button key="key-theme" label={`theme: ${themeByName(s.theme)?.label ?? 'Auto'}`} onPress={() => undefined} />
           <Button key="key-help" label={isHelpOn ? 'hide help' : 'help'} onPress={() => update($, showHelp, v => !v)} />
           <Button key="key-close" label="close" onPress={() => undefined} />
         </Box>
@@ -893,7 +940,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         <Text dimColor wrap="truncate-end">{limits.length > 0 ? ` · ${limits.map(l => `${l.kind} ${Math.round(l.pct)}%`).join(' · ')}` : ''}{att.total > 0 ? ' · see the Dashboard tab' : ''}</Text>
       </Box>
     )
-    const tabView = { Box, Text, Button, W, now, tone: TONE, fmt: { ago, cut } }
+    const tabView = { Box, Text, Button, W, now, tone: TONE, border: LOOK.border, fmt: { ago, cut } }
 
     return (
       <Box flexDirection="column" width={W}>
@@ -921,6 +968,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, snap)
     if (!s || !s.bandOn || s.paneOpen || e.props.hasSurvey) return next(e)
+    applyTheme(TONE, s.theme)
     const { Box, Text } = $.ui.resolve(e)
     const now = Date.now()
     const W = Math.max(30, e.props.bodyColumns)
@@ -942,7 +990,7 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
       : att.failing[0] ? `#${att.failing[0].number} ${att.failing[0].conflicts ? 'conflicts' : 'CI failing'}`
       : ''
     const lead =
-      att.urgent > 0 ? { text: `◆ ${att.urgent} need${att.urgent === 1 ? 's' : ''} you`, tone: TONE.warn }
+      att.urgent > 0 ? { text: `◆ ${att.urgent} need${att.urgent === 1 ? 's' : ''} you`, tone: TONE.you }
       : att.reviews.length > 0 ? { text: `◎ ${plural(att.reviews.length, 'review')} waiting`, tone: TONE.info }
       : { text: '✓ all clear', tone: TONE.ok }
 
