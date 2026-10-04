@@ -20,6 +20,7 @@ import { HELP_KEYS, actionsFor, dismissAdd, ids, itemById, snoozeAdd } from './k
 import type { Item, Muting, RowAction } from './keys'
 import { bytes, isDiskLow } from './monitor'
 import { TABS, isTab } from './entertainment'
+import { buddyRuns, drawScene, getBuddy, moodOf, setStage, toRaster } from './buddy'
 import { applyLook, applyTheme, themeByName } from './themes'
 import type { Look, Roles } from './themes'
 import { progressSections } from './progress-view'
@@ -32,7 +33,7 @@ export const PANE = 'dev-dash'
 export const snap = atom({ plugin: 'dev-dash', key: 'snap' } as const, null)
 export const collapsed = atom({ plugin: 'dev-dash', key: 'collapsed' } as const, [])
 export const expanded = atom({ plugin: 'dev-dash', key: 'expanded' } as const, [])
-export const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, false)
+export const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, 0)
 export const activity = atom({ plugin: 'dev-dash', key: 'activity' } as const, [])
 export const openRow = atom({ plugin: 'dev-dash', key: 'openRow' } as const, '')
 export const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
@@ -203,7 +204,8 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     applyLook(LOOK, s?.theme)
     const folded = (await read($, collapsed)) ?? []
     const opened2 = (await read($, expanded)) ?? []
-    const isPulse = (await read($, blink)) === true
+    const tickN = (await read($, blink)) ?? 0
+    const isPulse = Math.floor(tickN / 2) % 2 === 0 // one second on, one second off
     const samples = (await read($, activity)) ?? []
     const L = layoutFor(e.props.bodyColumns ?? (e.viewport ? e.viewport.columns - 2 : undefined))
     const { W, isNarrow } = L
@@ -326,6 +328,18 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
     // "claude beat": a line graph of how much effort Claude put in at each sync, flat along the bottom when idle.
     const beat = claudeBeat(samples, L.sparkCells, isNarrow ? 4 : 5)
     const tipAt = tipRow(samples, L.sparkCells, isNarrow ? 4 : 5)
+    // A buddy (an animated character from a pack) can stand in for the claude beat: /dash-beat buddy <name>.
+    // A sprite pack is drawn at the slot's size and the current time; on the terminal it is one Raster that a timer
+    // repaints in place (smooth motion without redrawing the pane), elsewhere text runs that step with the pane.
+    const buddy = s.beatStyle === 'buddy' ? getBuddy() : null
+    const buddyMood = moodOf(att.urgent, live)
+    const slot = { cols: L.sparkCells, rows: isNarrow ? 4 : 5 }
+    const els = $.ui.resolve(e)
+    const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : undefined
+    const isRaster = buddy?.kind === 'sprite' && Raster !== undefined
+    setStage(isRaster ? { mood: buddyMood, ...slot } : null)
+    const buddyRows = buddy && !isRaster ? buddyRuns(buddy, buddyMood, now, tickN, slot.cols, slot.rows) : []
+    const buddyHeight = buddy?.kind === 'cells' ? buddy.rows : slot.rows
 
     // ---- header card ------------------------------------------------------
     const header = (
@@ -360,11 +374,23 @@ export function registerDashPane(on: On, hooks: { onHide?: () => void } = {}) {
         )}
         <Box flexDirection="row" columnGap={1}>
           <Box flexDirection="column">
-            <Text bold color={TONE.bad}>♥ claude beat</Text>
-            <Text dimColor wrap="truncate-end">synced {ago(now - s.updatedAt)} ago</Text>
+            <Text bold color={TONE.bad}>{buddy ? `♥ ${buddy.name}` : '♥ claude beat'}</Text>
+            <Text dimColor wrap="truncate-end">{buddy ? `${buddyMood} · ` : ''}synced {ago(now - s.updatedAt)} ago</Text>
           </Box>
           <Box flexDirection="column">
-            {beat.map((row, at) => {
+            {buddy && isRaster && Raster && buddy.kind === 'sprite' && (
+              <Raster key="buddy" columns={slot.cols} rows={slot.rows} cells={toRaster(drawScene(buddy, buddyMood, now, slot.cols, slot.rows))} />
+            )}
+            {buddy && !isRaster &&
+              Array.from({ length: buddyHeight }, (_, i) => (
+                <Text>
+                  {(buddyRows[i] ?? []).map(([t, fg, bg]) => (
+                    <Text color={fg ?? undefined} backgroundColor={bg ?? undefined}>{t}</Text>
+                  ))}
+                  {(buddyRows[i] ?? []).length === 0 ? ' ' : ''}
+                </Text>
+              ))}
+            {!buddy && beat.map((row, at) => {
               // The tip of the line (its newest sample) blinks, so a quiet pane still shows that it is alive.
               const tip = row.slice(-1)
               const isTip = at === tipAt && tip !== ' ' && row.length > 1

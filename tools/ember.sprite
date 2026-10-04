@@ -1,0 +1,62 @@
+# ember: an original example buddy for dev-dash (free to use). Build it with:
+#   python tools/make-buddy.py tools/ember.sprite
+name ember
+mouth 8 4                     # where its fire comes out, facing right
+colour F #ffd23c              # flame tip
+colour O #ff8a2a              # body
+colour R #e0461e              # body shade
+colour K #3a2a30              # eyes
+colour W #fff4c8              # cheeks
+
+mood idle sit zzz 900         # mood <idle|working|needs> <motion> <effect> [ms per frame]
+....F....
+...FF....
+..FOOF...
+..OOOOO..
+.OOKOOKO.
+.OOOOOOO.
+.ROOWOOR.
+..RRRRR..
+..R...R..
+
+....F....
+....FF...
+..FOOF...
+..OOOOO..
+.OOKOOKO.
+.OOOOOOO.
+.ROOWOOR.
+..RRRRR..
+..R...R..
+
+mood working walk dust 200
+.....F...
+....FF...
+...FOOF..
+..OOOOOO.
+.OOOKOOK.
+.OOOOOOO.
+.ROOOWOR.
+..RRRRR..
+..R...R..
+
+....F....
+...FF....
+...FOOF..
+..OOOOOO.
+.OOOKOOK.
+.OOOOOOO.
+.ROOOWOR.
+..RRRRR..
+...R.R...
+
+mood needs hop fire 200
+...F.F...
+...FFF...
+..FOOOF..
+..OOOOOO.
+.OOOKOOK.
+.OOOOOOO.
+.ROOOWOR.
+..RRRRR..
+..R...R..

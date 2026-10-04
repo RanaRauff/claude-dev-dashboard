@@ -22,6 +22,7 @@ import type {
   IconStyle,
   WatchKind,
   WatchRow,
+  BeatStyle,
   ThemeId,
   WorktreeRow,
 } from '../types'
@@ -59,6 +60,7 @@ import { DEFAULT_ICON_STYLE, ICON_STYLES, parseIconStyle } from './icons'
 import { addSource, countLines, parseNumstat, planOf, sourceOf, TURN_FILES_KEPT } from './progress'
 import { testRunOf } from './testrun'
 import { pushActivity, registerDashPane } from './render'
+import { NAME_OK, drawScene, getBuddy, getStage, parsePack, setBuddy, toRaster } from './buddy'
 import { THEMES, isTheme, nextTheme, themeByName } from './themes'
 import type { Reading } from './watch'
 import {
@@ -80,6 +82,7 @@ import {
 } from './watch'
 
 const PANE = 'dev-dash'
+const BUDDY_MS = 125
 const TICK_MS = 5000
 const PR_EVERY_TICKS = 12
 const STALE_MS = 90_000
@@ -90,7 +93,7 @@ const paneOpen = atom({ plugin: 'dev-dash', key: 'paneOpen' } as const, false)
 const snoozed = atom({ plugin: 'dev-dash', key: 'snoozed' } as const, {})
 const tab = atom({ plugin: 'dev-dash', key: 'tab' } as const, 'dashboard')
 const dismissed = atom({ plugin: 'dev-dash', key: 'dismissed' } as const, [])
-const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, false)
+const blink = atom({ plugin: 'dev-dash', key: 'blink' } as const, 0)
 
 const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p
@@ -189,6 +192,8 @@ const ctx = {
   spotifyOn: false,
   focusOn: true,
   theme: 'auto' as ThemeId,
+  beatStyle: 'line' as BeatStyle,
+  buddyName: '',
   plan: null as PlanProgress | null,
   planAt: 0,
   sources: [] as SourceRow[],
@@ -743,6 +748,8 @@ async function publishNow($: Engine, gitInfo: GitInfo | null | undefined, sample
       spotifyOn: ctx.spotifyOn,
       focusOn: ctx.focusOn,
       theme: ctx.theme,
+      beatStyle: ctx.beatStyle,
+      buddyName: ctx.buddyName,
       git: gitInfo === undefined ? (s?.git ?? null) : gitInfo,
       prs: ctx.prs,
       watches: ctx.watches,
@@ -928,6 +935,59 @@ async function setSpotify($: Engine, arg: string) {
     : 'Spotify is off. Nothing is read.'
 }
 
+// Load the buddy pack the header is set to use (a JSON file made by tools/make-buddy.py). Null when it is not a pack.
+async function loadBuddy($: Engine) {
+  setBuddy(null)
+  if (ctx.beatStyle !== 'buddy' || !NAME_OK.test(ctx.buddyName)) return false
+  const text = await $.fs.read(`${ctx.root}/buddy/${ctx.buddyName}.json`).catch(() => '')
+  const pack = text ? parsePack(text) : null
+  setBuddy(pack)
+
+  return pack !== null
+}
+
+// /dash-beat: `line` (the default red line), `buddy [name]`, a bare name, `list`, or nothing to switch between them.
+async function setBeat($: Engine, arg: string) {
+  const [word = '', second = ''] = arg.trim().split(/\s+/)
+  const w = word.toLowerCase()
+  if (w === 'list') {
+    const found = (await $.fs.list(`${ctx.root}/buddy`).catch(() => []))
+      .filter(f => f.kind === 'file' && f.name.endsWith('.json'))
+      .map(f => f.name.slice(0, -5))
+      .filter(n => NAME_OK.test(n))
+
+    return found.length
+      ? `Buddies: ${found.join(', ')}. Use /dash-beat buddy <name>, or /dash-beat line for the red line.`
+      : 'No buddies yet. Make one with tools/make-buddy.py from a .sprite file or animated GIFs (see the README), then /dash-beat list.'
+  }
+  if (w === 'line' || (w === '' && ctx.beatStyle === 'buddy')) {
+    ctx.beatStyle = 'line'
+    setBuddy(null)
+    await $.store.set('beatStyle', 'line').catch(() => undefined)
+    await publish($, undefined)
+
+    return 'The header shows the claude beat line.'
+  }
+  const name = w === '' || w === 'buddy' ? second || ctx.buddyName : w
+  if (!name) return 'Which buddy? /dash-beat list shows the ones you have.'
+  if (!NAME_OK.test(name)) return 'A buddy name is letters, digits, - and _ only.'
+  const was = { style: ctx.beatStyle, name: ctx.buddyName }
+  ctx.beatStyle = 'buddy'
+  ctx.buddyName = name
+  if (!(await loadBuddy($))) {
+    ctx.beatStyle = was.style
+    ctx.buddyName = was.name
+    await loadBuddy($)
+
+    return `No buddy called "${name}" (or its file is not a pack this version can play). /dash-beat list shows the ones you have.`
+  }
+  await $.store.set('beatStyle', 'buddy').catch(() => undefined)
+  await $.store.set('buddyName', name).catch(() => undefined)
+  await publish($, undefined)
+
+  return `The header shows ${name}. /dash-beat line goes back to the red line.`
+}
+
 // /dash-theme: no argument or `next` cycles, `list` names them, a name picks one. The footer button cycles.
 async function setTheme($: Engine, arg: string) {
   const a = arg.trim().toLowerCase()
@@ -1005,6 +1065,12 @@ export const register: Register = on => {
     if (typeof stored === 'boolean') ctx.alertsOn = stored
     const storedBand = await $.store.get('bandOn').catch(() => undefined)
     if (typeof storedBand === 'boolean') ctx.bandOn = storedBand
+    await $.command.register({ name: 'dash-beat', description: 'What the header draws: line (the claude beat, default) | buddy <name> (an animated character) | list' })
+    const storedBeat = await $.store.get('beatStyle').catch(() => undefined)
+    const storedBuddy = await $.store.get('buddyName').catch(() => undefined)
+    if (typeof storedBuddy === 'string' && NAME_OK.test(storedBuddy)) ctx.buddyName = storedBuddy
+    if (storedBeat === 'buddy' || storedBeat === 'line') ctx.beatStyle = storedBeat
+    await loadBuddy($)
     await $.command.register({ name: 'dash-theme', description: 'Colour theme: auto (default) | claude | nord | neon | crt | light | mono, or no name to cycle; list shows them' })
     const storedTheme = await $.store.get('theme').catch(() => undefined)
     if (isTheme(storedTheme)) ctx.theme = storedTheme
@@ -1035,9 +1101,18 @@ export const register: Register = on => {
     // A reload of the mod starts this module over; the host's state remembers the pane was open.
     ctx.isOpen = (await read($, paneOpen)) === true
     await tick($, ctx.isOpen)
-    // The claude beat's tip blinks once a second while the pane is open. Only an atom flips: no data is collected.
-    $.clock.every(1000, async () => {
-      if (ctx.isOpen) await update($, blink, v => !v)
+    // A half-second beat while the pane is open: the claude beat's tip blinks and the buddy steps with it. Only a
+    // counter changes: no data is collected.
+    $.clock.every(500, async () => {
+      if (ctx.isOpen) await update($, blink, v => ((v ?? 0) + 1) % 1_000_000)
+    })
+    // A sprite buddy on the terminal is a Raster: repaint it in place about eight times a second, so it walks and
+    // flies smoothly without redrawing the pane. Nothing runs unless the pane is open and showing one.
+    $.clock.every(BUDDY_MS, async () => {
+      const pack = getBuddy()
+      const at = getStage()
+      if (!ctx.isOpen || ctx.beatStyle !== 'buddy' || pack?.kind !== 'sprite' || !at) return
+      await $.ui.blit({ requestId: PANE, key: 'buddy', cells: toRaster(drawScene(pack, at.mood, Date.now(), at.cols, at.rows)) }).catch(() => undefined)
     })
     $.clock.every(TICK_MS, async () => {
       ctx.ticks += 1
@@ -1207,6 +1282,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dash-alerts' }, async ($, e) => ({ text: await setAlerts($, e.args ?? '') }))
+  on('command.run', { command: 'dash-beat' }, async ($, e) => ({ text: await setBeat($, e.args ?? '') }))
   on('command.run', { command: 'dash-theme' }, async ($, e) => ({ text: await setTheme($, e.args ?? '') }))
   on('command.run', { command: 'dash-focus' }, async ($, e) => ({ text: await setFocus($, e.args ?? '') }))
   on('command.run', { command: 'dash-spotify' }, async ($, e) => ({ text: await setSpotify($, e.args ?? '') }))
